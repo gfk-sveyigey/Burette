@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// 带语法高亮的文本编辑器。
+/// 带语法高亮与行号栏的文本编辑器。
 ///
-/// 目前用轻量的正则高亮（见 Support/CodeHighlighting.swift）；
-/// M3 会替换为 Runestone（行号、Tree-sitter 高亮、搜索替换）。
+/// 高亮由 Support/CodeHighlighting.swift 的正则词法器提供：
+/// 覆盖注释、字符串、数字、关键字、类型、函数调用等 token，并带行号栏。
+/// 若后续接入 Runestone（project.yml 里预留了依赖），只需替换这里的实现。
 struct EditorView: View {
     @EnvironmentObject private var env: AppEnvironment
     let repository: Repository
@@ -50,6 +51,11 @@ struct EditorView: View {
             .navigationTitle(fileName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Text(language.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
                         env.saveEditedFile(repository, path: path, content: text)
