@@ -51,6 +51,8 @@ struct GitDataService: Sendable {
             }
         }
         guard !entries.isEmpty else { throw GitDataError.noStagedChanges }
+        let deletedCount = changes.filter { $0.isStaged && $0.status == .deleted }.count
+        Log.debug("提交内容：\(entries.count) 个文件（删除 \(deletedCount) 个，新增/修改 \(entries.count - deletedCount) 个）", .github)
 
         // 4. 生成新 tree
         let tree = try await client.createTree(

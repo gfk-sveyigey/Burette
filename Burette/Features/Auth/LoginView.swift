@@ -57,9 +57,14 @@ struct LoginView: View {
                 .opacity(token.isEmpty || isWorking ? 0.5 : 1)
                 .disabled(token.isEmpty || isWorking)
 
-                Text("需要在 PAT 中勾选 repo 权限。")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("PAT 必须具备仓库读写权限，否则无法提交 / 推送：")
+                    Text("· 经典令牌：勾选 repo（私有仓库必需）")
+                    Text("· 细粒度令牌：Contents → Read and write，并勾选 Metadata → Read")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(24)
             .liquidGlass(cornerRadius: 28)

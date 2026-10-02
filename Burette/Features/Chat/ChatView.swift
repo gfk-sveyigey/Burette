@@ -4,6 +4,7 @@ struct ChatView: View {
     @EnvironmentObject private var env: AppEnvironment
 
     @State private var input = ""
+    @State private var toast: String?
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
@@ -47,8 +48,12 @@ struct ChatView: View {
                         }
 
                         ForEach(messages) { message in
-                            MessageBubble(message: message) { patches in
-                                env.apply(patches: patches, in: repository)
+                            MessageBubble(
+                                message: message,
+                                isApplied: env.isApplied(message)
+                            ) { patches in
+                                let ok = env.apply(patches: patches, in: repository, messageID: message.id)
+                                if ok { showToast("已应用改动到工作区") }
                             }
                             .id(message.id)
                         }
@@ -73,8 +78,27 @@ struct ChatView: View {
                 }
             }
 
-            Divider()
             inputBar(for: repository)
+        }
+        .overlay(alignment: .top) {
+            if let toast {
+                Text(toast)
+                    .font(.footnote.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(Color.green.opacity(0.92), in: Capsule())
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+    }
+
+    private func showToast(_ text: String) {
+        withAnimation { toast = text }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            withAnimation { toast = nil }
         }
     }
 
@@ -110,6 +134,7 @@ struct ChatView: View {
             } label: {
                 Image(systemName: "arrow.up")
                     .font(.headline)
+                    .foregroundStyle(.white)
                     .frame(width: 42, height: 42)
                     .contentShape(Circle())
             }
@@ -179,6 +204,7 @@ struct ThinkingBubble: View {
 
 struct MessageBubble: View {
     let message: ChatMessage
+    let isApplied: Bool
     let onApply: ([FilePatch]) -> Void
 
     var body: some View {
@@ -205,9 +231,16 @@ struct MessageBubble: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Button("应用改动") { onApply(patches) }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
+
+                    if isApplied {
+                        Label("已应用", systemImage: "checkmark.circle.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(.green)
+                    } else {
+                        Button("应用改动") { onApply(patches) }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.small)
+                    }
                 }
                 .padding(10)
                 .liquidGlass(cornerRadius: 12)

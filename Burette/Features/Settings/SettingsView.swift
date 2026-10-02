@@ -63,6 +63,22 @@ struct SettingsView: View {
             Section("账户") {
                 accountRow
 
+                HStack {
+                    Label("令牌权限", systemImage: "key.horizontal")
+                        .foregroundStyle(.primary)
+                    Spacer()
+                    Text(env.tokenScopes.isEmpty ? "未知" : env.tokenScopes.joined(separator: ", "))
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                if !env.tokenScopes.isEmpty && !env.tokenScopes.contains("repo") {
+                    Label("缺少 repo 权限，可能无法推送", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+
                 Button {
                     accountSheet = .switchAccount
                 } label: {
@@ -75,7 +91,11 @@ struct SettingsView: View {
                     Label("修改账户信息", systemImage: "pencil")
                 }
 
-                Button("退出登录", role: .destructive) { env.signOut() }
+                Button(role: .destructive) {
+                    env.signOut()
+                } label: {
+                    Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+                }
             }
 
             Section("诊断") {

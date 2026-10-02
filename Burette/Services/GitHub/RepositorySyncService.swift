@@ -29,6 +29,7 @@ struct RepositorySyncService: Sendable {
         let owner = repository.owner
         let repo = repository.name
         let targetBranch = branch ?? repository.currentBranch
+        let startedAt = Date()
 
         let ref = try await client.ref(owner: owner, repo: repo, branch: targetBranch)
         let commitSHA = ref.object.sha
@@ -59,6 +60,8 @@ struct RepositorySyncService: Sendable {
             written += 1
         }
 
+        let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
+        Log.info("工作区就绪：\(owner)/\(repo)＠\(targetBranch)，写入 \(written) 个文件（跳过 \(blobs.count - written) 个二进制），用时 \(elapsed) ms", .workspace)
         return (commitSHA, written)
     }
 }

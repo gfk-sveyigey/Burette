@@ -49,12 +49,14 @@ struct WorkspaceManager: Sendable {
             withIntermediateDirectories: true
         )
         try content.write(to: url, atomically: true, encoding: .utf8)
+        Log.debug("写入工作区文件：\(path)（\(content.count) 字）", .workspace)
     }
 
     func delete(repository: Repository, path: String) throws {
         let url = try fileURL(repository: repository, path: path)
         if FileManager.default.fileExists(atPath: url.path) {
             try FileManager.default.removeItem(at: url)
+            Log.debug("删除工作区文件：\(path)", .workspace)
         }
     }
 

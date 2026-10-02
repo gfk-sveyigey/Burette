@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct LogsView: View {
     @ObservedObject private var center = LogCenter.shared
@@ -69,7 +70,7 @@ struct LogsView: View {
                 Text(entry.level.rawValue)
                     .font(.caption2.bold())
                     .foregroundStyle(color(entry.level))
-                Text(entry.category.rawValue)
+                Text(entry.category.label)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -83,6 +84,17 @@ struct LogsView: View {
                 .textSelection(.enabled)
         }
         .padding(.vertical, 2)
+        .contextMenu {
+            Button {
+                UIPasteboard.general.string = text(entry)
+            } label: {
+                Label("复制这条日志", systemImage: "doc.on.doc")
+            }
+        }
+    }
+
+    private func text(_ entry: LogEntry) -> String {
+        "[(time(entry.date))] [(entry.level.rawValue)] [(entry.category.label)] (entry.message)"
     }
 
     private func color(_ level: LogLevel) -> Color {
