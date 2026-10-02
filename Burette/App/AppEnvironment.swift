@@ -25,8 +25,10 @@ final class AppEnvironment: ObservableObject {
     @Published var currentUser: GitHubUser?
     @Published var isAuthenticated = false
     @Published var isSending = false
-    /// 正在进行中的 agent 步骤描述（对话页顶部实时展示）。
+    /// 正在进行中的 agent 步骤描述（对话页实时展示）。
     @Published var agentStatus: String?
+    /// 最近一次自动应用改动的提示，界面读取后置空。
+    @Published var applyNotice: String?
     @Published var busyMessage: String?
     @Published var lastError: String?
 
@@ -508,13 +510,25 @@ final class AppEnvironment: ObservableObject {
             let diffText = DiffExtractor.extract(from: reply)
             let patches = try? DiffParser.parse(diffText)
 
-            appendMessage(
-                ChatMessage(role: .assistant, content: reply, patches: patches),
-                to: conversation.id,
-                in: repository
+            let message = ChatMessage(
+                role: .assistant,
+                content: DiffExtractor.prose(from: reply),
+                patches: patches
             )
+            appendMessage(message, to: conversation.id, in: repository)
+
+            // 直接应用到工作区，界面只做通知，不需要用户手动确认。
+            if let patches, !patches.isEmpty {
+                if apply(patches: patches, in: repository, messageID: message.id) {
+                    applyNotice = "已自动应用 \(patches.count) 个文件的改动"
+                    Log.info("收到 AI 回复并自动应用：\(reply.count) 字，\(patches.count) 个文件改动", .ai)
+                } else {
+                    Log.warning("自动应用改动失败：\(lastError ?? "未知错误")", .diff)
+                }
+            } else {
+                Log.info("收到 AI 回复：\(reply.count) 字，没有可应用的改动", .ai)
+            }
             persistAll()
-            Log.info("收到 AI 回复：\(reply.count) 字，解析出 \(patches?.count ?? 0) 个文件改动", .ai)
         } catch {
             if Self.isCancellation(error) {
                 Log.info("对话请求已中断", .ai)
@@ -730,15 +744,29 @@ final class AppEnvironment: ObservableObject {
         Log.info("开始提交：\(repository.fullName)＠\(repository.currentBranch)，\(staged.count) 个文件", .github)
         do {
             let sha = try await gitData.commit(repository: repository, changes: staged, message: trimmed)
-            if let index = repositories.firstIndex(where: { $0.id == repository.id }) {
-                repositories[index].baseCommitSHA = sha
-                repositories[index].lastSyncedAt = Date()
-            }
             var remaining = pendingChanges(for: repository)
             remaining.removeAll { $0.isStaged }
             changesByRepository[repository.id] = remaining
             persistAll()
             Log.info("提交并推送成功：\(staged.count) 个文件，新 commit \(sha.prefix(7))", .github)
+
+            // 推送成功后重新拉取一次，让本地工作区与 base 跟上远端的最新提交。
+            busyMessage = "正在同步远端…"
+            do {
+                let result = try await syncService.pull(repository: repository)
+                if let index = repositories.firstIndex(where: { $0.id == repository.id }) {
+                    repositories[index].baseCommitSHA = result.sha
+                    repositories[index].lastSyncedAt = Date()
+                }
+                // 工作区已被远端内容整体覆盖，未提交的改动不再存在于磁盘上，一并清掉避免列表与工作区不一致。
+                changesByRepository[repository.id] = []
+                remoteUpdates[repository.id] = false
+                persistAll()
+                Log.info("推送后重新拉取完成：\(repository.fullName)，base \(result.sha.prefix(7))", .workspace)
+            } catch {
+                lastError = error.localizedDescription
+                Log.error(error, .workspace)
+            }
             return true
         } catch {
             lastError = error.localizedDescription

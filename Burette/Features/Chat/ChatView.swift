@@ -50,6 +50,11 @@ struct ChatView: View {
                 env.ensureConversation(for: repository)
             }
         }
+        .onChange(of: env.applyNotice) { _, notice in
+            guard let notice else { return }
+            showToast(notice)
+            env.applyNotice = nil
+        }
     }
 
     // MARK: - Content
@@ -67,14 +72,8 @@ struct ChatView: View {
                         }
 
                         ForEach(messages) { message in
-                            MessageBubble(
-                                message: message,
-                                isApplied: env.isApplied(message)
-                            ) { patches in
-                                let ok = env.apply(patches: patches, in: repository, messageID: message.id)
-                                if ok { showToast("已应用改动到工作区") }
-                            }
-                            .id(message.id)
+                            MessageBubble(message: message)
+                                .id(message.id)
                         }
 
                         if env.isSending {
@@ -123,7 +122,7 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
             Text("Burette Agent")
                 .font(.headline)
-            Text("描述你想怎么改。Agent 会读取整个项目的文件、请求模型、解析 unified diff，并把可应用的改动交给你确认。")
+            Text("描述你想怎么改。Agent 会读取整个项目的文件、请求模型，并把改动自动应用到工作区，完成后通知你。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -394,8 +393,6 @@ struct AgentRunView: View {
 
 struct MessageBubble: View {
     let message: ChatMessage
-    let isApplied: Bool
-    let onApply: ([FilePatch]) -> Void
 
     private var isUser: Bool { message.role == .user }
 
@@ -416,39 +413,10 @@ struct MessageBubble: View {
                 .padding(12)
                 .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            if let patches = message.patches, !patches.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(patches) { patch in
-                        HStack(spacing: 6) {
-                            Text(badge(patch.kind))
-                                .font(.caption2.bold())
-                                .foregroundStyle(.white)
-                                .frame(width: 18, height: 18)
-                                .background(badgeColor(patch.kind), in: RoundedRectangle(cornerRadius: 4))
-                            Text(patch.path).font(.caption.monospaced())
-                            Spacer()
-                            Text("+\(patch.addedLineCount) -\(patch.removedLineCount)")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    if isApplied {
-                        Label("已应用到工作区", systemImage: "checkmark.circle.fill")
-                            .font(.caption.bold())
-                            .foregroundStyle(.green)
-                    } else {
-                        Button {
-                            onApply(patches)
-                        } label: {
-                            Label("应用改动", systemImage: "square.and.arrow.down")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                    }
-                }
-                .padding(10)
-                .liquidGlass(cornerRadius: 12)
+            if !isUser, let patches = message.patches, !patches.isEmpty {
+                Label("已自动应用 \(patches.count) 个文件的改动", systemImage: "checkmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.green)
             }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
@@ -456,21 +424,5 @@ struct MessageBubble: View {
 
     private var bubbleBackground: Color {
         isUser ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.12)
-    }
-
-    private func badge(_ kind: FilePatch.Kind) -> String {
-        switch kind {
-        case .added: return "A"
-        case .deleted: return "D"
-        case .modified: return "M"
-        }
-    }
-
-    private func badgeColor(_ kind: FilePatch.Kind) -> Color {
-        switch kind {
-        case .added: return .green
-        case .deleted: return .red
-        case .modified: return .orange
-        }
     }
 }

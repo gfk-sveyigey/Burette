@@ -23,11 +23,14 @@ struct ChangesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("提交并推送") {
+                Button {
                     guard let repository = env.selectedRepository else { return }
                     commit(in: repository)
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
                 }
                 .disabled(!canCommit)
+                .accessibilityLabel("提交并推送")
             }
         }
         .alert(
@@ -88,14 +91,9 @@ struct ChangesView: View {
         }
         .sheet(item: $preview) { change in
             NavigationStack {
-                ScrollView {
-                    Text(change.unifiedDiff())
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                }
-                .navigationTitle(change.path)
-                .navigationBarTitleDisplayMode(.inline)
+                DiffView(original: change.original, current: change.current)
+                    .navigationTitle(change.path)
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
     }

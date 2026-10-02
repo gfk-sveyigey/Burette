@@ -92,7 +92,7 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 - ChatView 顶栏左侧进入对话列表；AppEnvironment 维护 conversationsByRepository 与 selectedConversationIDs。
 - 发送时把整个项目文件作为上下文（contextPaths 非空时只取指定文件），依次经过「整理上下文 → 请求模型 → 解析 diff」，agentStatus 实时暴露给界面，由 AgentRunView 以步骤卡片呈现，使过程更像一次 agent 任务执行。
 - send 为非阻塞：内部持有 sendTask，再次发送或点击停止键会调用 cancelSend() 取消在途请求，取消不写入错误提示。
-- AI 返回的 diff 需用户在气泡里点击「应用改动」才写入工作区；应用后按消息 id 记录，避免重复应用。
+- AI 返回的 diff 会自动应用到工作区（agentStatus 走完后由 AppEnvironment.apply 写入），界面只展示说明文字与「已自动应用 N 个文件」提示；气泡正文用 DiffExtractor.prose 去掉 diff 原文。
 
 ## 4. 并发约定
 
