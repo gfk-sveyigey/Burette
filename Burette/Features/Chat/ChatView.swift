@@ -121,7 +121,7 @@ struct ChatView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.bar)
+        .background(Color(.systemBackground))
     }
 
     private func send(in repository: Repository) {

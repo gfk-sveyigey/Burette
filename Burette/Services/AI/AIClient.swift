@@ -79,11 +79,15 @@ struct AIClient: Sendable {
             )
         )
 
+        Log.debug("AI 请求：\(config.model) → \(url.absoluteString)", .ai)
+
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
+            Log.error("AI \(config.model) 返回了无效响应", .ai)
             throw AIError.http(status: -1, message: "无效的服务器响应。")
         }
         guard (200..<300).contains(http.statusCode) else {
+            Log.error("AI \(config.model) → HTTP \(http.statusCode)", .ai)
             throw AIError.http(
                 status: http.statusCode,
                 message: String(data: data, encoding: .utf8) ?? ""
