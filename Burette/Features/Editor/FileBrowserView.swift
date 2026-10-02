@@ -50,6 +50,7 @@ struct FileNodeRow: View {
                 HStack(spacing: 8) {
                     Image(systemName: "folder")
                         .foregroundStyle(.secondary)
+                        .frame(width: 22, alignment: .center)
                     Text(node.name)
                         .foregroundStyle(.primary)
                 }
@@ -61,6 +62,7 @@ struct FileNodeRow: View {
                 HStack(spacing: 8) {
                     Image(systemName: "doc.text")
                         .foregroundStyle(.secondary)
+                        .frame(width: 22, alignment: .center)
                     Text(node.name)
                         .foregroundStyle(.primary)
                 }

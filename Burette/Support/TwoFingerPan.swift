@@ -51,10 +51,41 @@ struct TwoFingerPanCatcher: UIViewRepresentable {
         }
 
         @objc private func handle(_ gesture: UIPanGestureRecognizer) {
-            guard gesture.state == .ended else { return }
-            let translation = gesture.translation(in: gesture.view)
-            guard abs(translation.y) > 40, abs(translation.y) > abs(translation.x) else { return }
-            onTrigger()
+            switch gesture.state {
+            case .began:
+                // 双指手势期间锁住列表滚动，避免页面跟着滑。
+                lockScrollViews(at: gesture.location(in: nil))
+            case .ended:
+                unlockScrollViews()
+                let translation = gesture.translation(in: gesture.view)
+                guard abs(translation.y) > 40, abs(translation.y) > abs(translation.x) else { return }
+                onTrigger()
+            case .cancelled, .failed:
+                unlockScrollViews()
+            default:
+                break
+            }
+        }
+
+        private var lockedScrollViews: [UIScrollView] = []
+
+        private func lockScrollViews(at point: CGPoint) {
+            guard let window else { return }
+            var view = window.hitTest(point, with: nil)
+            while let current = view {
+                if let scrollView = current as? UIScrollView, scrollView.isScrollEnabled {
+                    scrollView.isScrollEnabled = false
+                    lockedScrollViews.append(scrollView)
+                }
+                view = current.superview
+            }
+        }
+
+        private func unlockScrollViews() {
+            for scrollView in lockedScrollViews {
+                scrollView.isScrollEnabled = true
+            }
+            lockedScrollViews.removeAll()
         }
 
         func gestureRecognizer(

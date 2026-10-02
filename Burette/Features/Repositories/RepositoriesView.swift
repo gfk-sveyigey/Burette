@@ -109,9 +109,8 @@ struct RepositoriesView: View {
                         }
                     } label: {
                         Image(systemName: "ellipsis")
-                            .font(.system(size: 15, weight: .semibold))
+                            .font(.system(size: 16, weight: .semibold))
                             .frame(width: 30, height: 30)
-                            .background(Color.accentColor.opacity(0.15), in: Circle())
                             .contentShape(Circle())
                     }
                     .disabled(selection.isEmpty)
@@ -133,9 +132,8 @@ struct RepositoriesView: View {
     private func roundButton(_ systemName: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 16, weight: .semibold))
                 .frame(width: 30, height: 30)
-                .background(Color.accentColor.opacity(0.15), in: Circle())
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

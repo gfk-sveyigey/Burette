@@ -14,7 +14,8 @@ final class AppEnvironment: ObservableObject {
     @Published var aiConfigs: [AIProviderConfig] = []
     @Published var selectedRepositoryID: UUID?
     @Published var selectedAIConfigID: UUID?
-    @Published var messagesByRepository: [UUID: [ChatMessage]] = [:]
+    @Published var conversationsByRepository: [UUID: [Conversation]] = [:]
+    @Published var selectedConversationIDs: [UUID: UUID] = [:]
     @Published var changesByRepository: [UUID: [FileChange]] = [:]
     @Published var branchesByRepository: [UUID: [String]] = [:]
     @Published var remoteUpdates: [UUID: Bool] = [:]
@@ -79,8 +80,92 @@ final class AppEnvironment: ObservableObject {
         changesByRepository[repository.id] ?? []
     }
 
+    // MARK: - 对话管理
+
+    /// 该仓库的全部对话，按最近更新排序。
+    func conversations(for repository: Repository) -> [Conversation] {
+        (conversationsByRepository[repository.id] ?? [])
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    /// 当前选中的对话；没有选中时回退到最近更新的一条。
+    func currentConversation(for repository: Repository) -> Conversation? {
+        let list = conversationsByRepository[repository.id] ?? []
+        if let id = selectedConversationIDs[repository.id],
+           let match = list.first(where: { $0.id == id }) {
+            return match
+        }
+        return list.max { $0.updatedAt < $1.updatedAt }
+    }
+
     func messages(for repository: Repository) -> [ChatMessage] {
-        messagesByRepository[repository.id] ?? []
+        currentConversation(for: repository)?.messages ?? []
+    }
+
+    /// 保证仓库至少有一条对话，并返回当前对话。
+    @discardableResult
+    func ensureConversation(for repository: Repository) -> Conversation {
+        if let existing = currentConversation(for: repository) {
+            selectedConversationIDs[repository.id] = existing.id
+            return existing
+        }
+        return createConversation(in: repository)
+    }
+
+    func newConversation(in repository: Repository) {
+        _ = createConversation(in: repository)
+        Log.info("新建对话：\(repository.fullName)", .app)
+    }
+
+    @discardableResult
+    private func createConversation(in repository: Repository) -> Conversation {
+        let conversation = Conversation()
+        var list = conversationsByRepository[repository.id] ?? []
+        list.append(conversation)
+        conversationsByRepository[repository.id] = list
+        selectedConversationIDs[repository.id] = conversation.id
+        persistAll()
+        return conversation
+    }
+
+    func selectConversation(_ conversation: Conversation, in repository: Repository) {
+        selectedConversationIDs[repository.id] = conversation.id
+        persistAll()
+    }
+
+    func renameConversation(_ conversation: Conversation, in repository: Repository, title: String) {
+        guard var list = conversationsByRepository[repository.id],
+              let index = list.firstIndex(where: { $0.id == conversation.id }) else { return }
+        list[index].title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        list[index].updatedAt = Date()
+        conversationsByRepository[repository.id] = list
+        persistAll()
+        Log.info("重命名对话：\(list[index].displayTitle)", .app)
+    }
+
+    func deleteConversation(_ conversation: Conversation, in repository: Repository) {
+        guard var list = conversationsByRepository[repository.id] else { return }
+        list.removeAll { $0.id == conversation.id }
+        conversationsByRepository[repository.id] = list
+        if selectedConversationIDs[repository.id] == conversation.id {
+            selectedConversationIDs[repository.id] = list.max { $0.updatedAt < $1.updatedAt }?.id
+        }
+        persistAll()
+        Log.info("删除对话：\(conversation.displayTitle)", .app)
+        if list.isEmpty {
+            _ = createConversation(in: repository)
+        }
+    }
+
+    private func appendMessage(_ message: ChatMessage, to conversationID: UUID, in repository: Repository) {
+        guard var list = conversationsByRepository[repository.id],
+              let index = list.firstIndex(where: { $0.id == conversationID }) else { return }
+        list[index].messages.append(message)
+        list[index].updatedAt = Date()
+        if list[index].title == "新对话", message.role == .user {
+            list[index].title = Conversation.defaultTitle(from: message.content)
+        }
+        conversationsByRepository[repository.id] = list
     }
 
     // MARK: - 生命周期
@@ -106,7 +191,9 @@ final class AppEnvironment: ObservableObject {
         do {
             repositories = try store.load([Repository].self, from: "repositories") ?? []
             aiConfigs = try store.load([AIProviderConfig].self, from: "ai-configs") ?? []
-            messagesByRepository = try store.load([UUID: [ChatMessage]].self, from: "messages") ?? [:]
+            conversationsByRepository = try store.load([UUID: [Conversation]].self, from: "conversations") ?? [:]
+            selectedConversationIDs = try store.load([UUID: UUID].self, from: "selected-conversations") ?? [:]
+            migrateLegacyMessagesIfNeeded()
             changesByRepository = try store.load([UUID: [FileChange]].self, from: "changes") ?? [:]
             appliedMessageIDs = Set(try store.load([UUID].self, from: "applied-messages") ?? [])
             selectedRepositoryID = repositories.first?.id
@@ -116,11 +203,25 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// 把旧版本「每个仓库一条消息列表」迁移成对话。
+    private func migrateLegacyMessagesIfNeeded() {
+        guard conversationsByRepository.isEmpty else { return }
+        guard let legacy = try? store.load([UUID: [ChatMessage]].self, from: "messages"),
+              !legacy.isEmpty else { return }
+        var converted: [UUID: [Conversation]] = [:]
+        for (repositoryID, messages) in legacy where !messages.isEmpty {
+            converted[repositoryID] = [Conversation(title: "历史对话", messages: messages)]
+        }
+        conversationsByRepository = converted
+        Log.info("已迁移 \(converted.count) 个仓库的历史消息为对话", .app)
+    }
+
     private func persistAll() {
         do {
             try store.save(repositories, to: "repositories")
             try store.save(aiConfigs, to: "ai-configs")
-            try store.save(messagesByRepository, to: "messages")
+            try store.save(conversationsByRepository, to: "conversations")
+            try store.save(selectedConversationIDs, to: "selected-conversations")
             try store.save(changesByRepository, to: "changes")
             try store.save(Array(appliedMessageIDs), to: "applied-messages")
         } catch {
@@ -242,7 +343,8 @@ final class AppEnvironment: ObservableObject {
     func removeRepository(_ repository: Repository) {
         repositories.removeAll { $0.id == repository.id }
         changesByRepository[repository.id] = nil
-        messagesByRepository[repository.id] = nil
+        conversationsByRepository[repository.id] = nil
+        selectedConversationIDs[repository.id] = nil
         branchesByRepository[repository.id] = nil
         remoteUpdates[repository.id] = nil
         if selectedRepositoryID == repository.id { selectedRepositoryID = repositories.first?.id }
@@ -342,10 +444,11 @@ final class AppEnvironment: ObservableObject {
         defer { isSending = false }
         Log.info("发送对话请求：\(repository.fullName)，\(trimmed.count) 字", .ai)
 
-        var history = messages(for: repository)
-        history.append(ChatMessage(role: .user, content: trimmed))
-        messagesByRepository[repository.id] = history
+        let conversation = ensureConversation(for: repository)
+        appendMessage(ChatMessage(role: .user, content: trimmed), to: conversation.id, in: repository)
         persistAll()
+
+        let history = messages(for: repository)
 
         let snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
         let tree = (try? workspace.listFiles(repository: repository)) ?? []
@@ -377,9 +480,11 @@ final class AppEnvironment: ObservableObject {
             let diffText = DiffExtractor.extract(from: reply)
             let patches = try? DiffParser.parse(diffText)
 
-            var updated = messagesByRepository[repository.id] ?? []
-            updated.append(ChatMessage(role: .assistant, content: reply, patches: patches))
-            messagesByRepository[repository.id] = updated
+            appendMessage(
+                ChatMessage(role: .assistant, content: reply, patches: patches),
+                to: conversation.id,
+                in: repository
+            )
             persistAll()
             Log.info("收到 AI 回复：\(reply.count) 字，解析出 \(patches?.count ?? 0) 个文件改动", .ai)
         } catch {
