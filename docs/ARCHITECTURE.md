@@ -34,7 +34,7 @@
 | `Services/GitHub/` | REST 客户端与 Git Data API 提交流程 |
 | `Services/Workspace/` | 本地工作区读写、仓库与配置持久化 |
 | `Features/` | 按功能划分的界面：Auth / Repositories / Chat / Changes / Editor / Settings |
-| `Support/` | 通用视图与工具：Liquid Glass 封装、文件路径树（`FileNode`）、代码高亮（`CodeEditor` / `CodeHighlighter`）、双指手势（`TwoFingerPanCatcher`）、日志（`Log` / `LogCenter` / `CrashReporter`） |
+| `Support/` | 通用视图与工具：Liquid Glass 封装、文件路径树（`FileNode`）、代码高亮与行号栏（`CodeEditor` / `LineNumberTextView` / `CodeHighlighter`）、双指手势（`TwoFingerPanCatcher`）、日志（`Log` / `LogCenter` / `CrashReporter`） |
 
 ## 3. 关键设计
 
@@ -85,6 +85,15 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 
 日志中不会写入 Token / API Key 等明文密钥。
 
+### 3.7 Agent 对话
+
+每个仓库可保存多条对话（Conversation），支持新建、切换、重命名、删除与中断：
+
+- ChatView 顶栏左侧进入对话列表；AppEnvironment 维护 conversationsByRepository 与 selectedConversationIDs。
+- 发送时把整个项目文件作为上下文（contextPaths 非空时只取指定文件），依次经过「整理上下文 → 请求模型 → 解析 diff」，agentStatus 实时暴露给界面，由 AgentRunView 以步骤卡片呈现，使过程更像一次 agent 任务执行。
+- send 为非阻塞：内部持有 sendTask，再次发送或点击停止键会调用 cancelSend() 取消在途请求，取消不写入错误提示。
+- AI 返回的 diff 需用户在气泡里点击「应用改动」才写入工作区；应用后按消息 id 记录，避免重复应用。
+
 ## 4. 并发约定
 
 - 所有 IO（网络、文件）使用 `async/await`，不阻塞主线程
@@ -96,5 +105,5 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 | 需求 | 当前实现 | 说明 |
 |---|---|---|
 | 本地存储 SQLite | 先用 JSON 文件 | 已通过协议隔离，替换成本低 |
-| 语法高亮(Runestone) | 先用内置轻量正则高亮（`Support/CodeHighlighting.swift`） | Runestone 见 project.yml，接入后替换 |
+| 语法高亮(Runestone) | 内置正则高亮 + 行号栏（`Support/CodeHighlighting.swift`） | 覆盖注释/字符串/数字/关键字/类型/函数/装饰器等 token 及 Markdown、HTML、CSS、JSON、YAML 特例；Runestone 见 project.yml，接入后替换 |
 | Liquid Glass | 标准组件 + `Support/LiquidGlass.swift` 封装 | iOS 26 用 `glassEffect`；iOS 17–25 降级为 `ultraThinMaterial` |

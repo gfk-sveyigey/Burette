@@ -25,6 +25,8 @@ final class AppEnvironment: ObservableObject {
     @Published var currentUser: GitHubUser?
     @Published var isAuthenticated = false
     @Published var isSending = false
+    /// 正在进行中的 agent 步骤描述（对话页顶部实时展示）。
+    @Published var agentStatus: String?
     @Published var busyMessage: String?
     @Published var lastError: String?
 
@@ -38,6 +40,7 @@ final class AppEnvironment: ObservableObject {
     let gitData: GitDataService
 
     private let store: PersistenceStore
+    private var sendTask: Task<Void, Never>?
 
     // MARK: - Init
 
@@ -426,7 +429,25 @@ final class AppEnvironment: ObservableObject {
     // MARK: - 对话
 
     /// contextPaths 非空时只把这些文件作为上下文；否则按关键词自动挑选。
-    func send(_ text: String, in repository: Repository, contextPaths: [String] = []) async {
+    /// 启动一次对话（非阻塞）。再次调用会先取消上一次请求。
+    func send(_ text: String, in repository: Repository, contextPaths: [String] = []) {
+        sendTask?.cancel()
+        sendTask = Task { [weak self] in
+            await self?.performSend(text, in: repository, contextPaths: contextPaths)
+        }
+    }
+
+    /// 中断正在进行的对话请求（保留已经发出的用户消息）。
+    func cancelSend() {
+        guard sendTask != nil || isSending else { return }
+        sendTask?.cancel()
+        sendTask = nil
+        isSending = false
+        agentStatus = nil
+        Log.info("已中断对话请求", .ai)
+    }
+
+    private func performSend(_ text: String, in repository: Repository, contextPaths: [String]) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -441,7 +462,10 @@ final class AppEnvironment: ObservableObject {
         }
 
         isSending = true
-        defer { isSending = false }
+        defer {
+            isSending = false
+            agentStatus = nil
+        }
         Log.info("发送对话请求：\(repository.fullName)，\(trimmed.count) 字", .ai)
 
         let conversation = ensureConversation(for: repository)
@@ -450,6 +474,7 @@ final class AppEnvironment: ObservableObject {
 
         let history = messages(for: repository)
 
+        agentStatus = "正在整理仓库上下文…"
         let snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
         let tree = (try? workspace.listFiles(repository: repository)) ?? []
 
@@ -476,7 +501,10 @@ final class AppEnvironment: ObservableObject {
         }
 
         do {
+            agentStatus = "正在请求 AI 模型…"
             let reply = try await aiClient.complete(config: config, apiKey: apiKey, messages: apiMessages)
+            try Task.checkCancellation()
+            agentStatus = "正在解析改动…"
             let diffText = DiffExtractor.extract(from: reply)
             let patches = try? DiffParser.parse(diffText)
 
@@ -488,9 +516,19 @@ final class AppEnvironment: ObservableObject {
             persistAll()
             Log.info("收到 AI 回复：\(reply.count) 字，解析出 \(patches?.count ?? 0) 个文件改动", .ai)
         } catch {
-            lastError = error.localizedDescription
-            Log.error(error, .ai)
+            if Self.isCancellation(error) {
+                Log.info("对话请求已中断", .ai)
+            } else {
+                lastError = error.localizedDescription
+                Log.error(error, .ai)
+            }
         }
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
     }
 
     /// 读取指定文件内容，用于对话上下文。
@@ -653,10 +691,25 @@ final class AppEnvironment: ObservableObject {
         persistAll()
     }
 
+    /// 丢弃一处改动：从列表移除，并把工作区文件恢复到改动前的状态。
     func discard(change: FileChange, in repository: Repository) {
         guard var changes = changesByRepository[repository.id] else { return }
         changes.removeAll { $0.id == change.id }
         changesByRepository[repository.id] = changes
+
+        do {
+            if change.status == .added {
+                // 新增的文件直接删除。
+                try workspace.delete(repository: repository, path: change.path)
+            } else if let original = change.original {
+                // 修改 / 删除的文件用改动前的内容覆盖回去。
+                try workspace.write(repository: repository, path: change.path, content: original)
+            }
+            Log.info("丢弃改动并还原文件：\(repository.fullName)/\(change.path)", .workspace)
+        } catch {
+            lastError = error.localizedDescription
+            Log.error(error, .workspace)
+        }
         persistAll()
     }
 

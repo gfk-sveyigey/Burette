@@ -99,6 +99,15 @@ struct SettingsView: View {
                     accountLabel("运行日志", systemImage: "doc.text.magnifyingglass")
                 }
             }
+
+            Section {
+                Text(versionText)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
+            }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("设置")
@@ -125,6 +134,12 @@ struct SettingsView: View {
         } message: {
             Text("退出后会清空本地已添加的仓库列表（工作区文件仍保留在沙盒里）。")
         }
+    }
+
+    /// 页面底部显示的版本号，形如 “Burette v0.0.9”。
+    private var versionText: String {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String
+        return "Burette v\(version ?? "1.0.0")"
     }
 
     /// 账户 / 诊断区统一用的行样式：图标固定宽度、文字与图标都用主色（浅色下为黑色）。

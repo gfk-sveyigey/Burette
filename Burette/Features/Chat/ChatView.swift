@@ -28,15 +28,26 @@ struct ChatView: View {
         .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    showingConversations = true
+                } label: {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                }
+                .accessibilityLabel("对话列表")
+            }
             ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 18) {
-                    RepositoryMenuButton()
-                    Button {
-                        showingConversations = true
-                    } label: {
-                        Image(systemName: "bubble.left.and.bubble.right")
+                HStack(spacing: 14) {
+                    if env.isSending {
+                        Button {
+                            env.cancelSend()
+                        } label: {
+                            Image(systemName: "stop.fill")
+                                .foregroundStyle(.red)
+                        }
+                        .accessibilityLabel("中断对话")
                     }
-                    .accessibilityLabel("对话列表")
+                    RepositoryMenuButton()
                 }
             }
         }
@@ -63,12 +74,7 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         if messages.isEmpty && !env.isSending {
-                            Text("描述你想怎么改，AI 会读取这个项目的文件并返回 unified diff 供你预览和应用。")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: .infinity)
-                                .padding(.top, 48)
+                            emptyState
                         }
 
                         ForEach(messages) { message in
@@ -83,7 +89,7 @@ struct ChatView: View {
                         }
 
                         if env.isSending {
-                            ThinkingBubble()
+                            AgentRunView(status: env.agentStatus)
                                 .id(Self.thinkingID)
                         }
                     }
@@ -99,6 +105,9 @@ struct ChatView: View {
                 }
                 .onChange(of: env.isSending) { _, _ in
                     scrollToBottom(proxy, messages: messages)
+                }
+                .onChange(of: env.agentStatus) { _, _ in
+                    if env.isSending { scrollToBottom(proxy, messages: messages) }
                 }
             }
 
@@ -118,6 +127,22 @@ struct ChatView: View {
         }
     }
 
+    private var emptyState: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text("Burette Agent")
+                .font(.headline)
+            Text("描述你想怎么改。Agent 会读取整个项目的文件、请求模型、解析 unified diff，并把可应用的改动交给你确认。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 40)
+    }
+
     private func showToast(_ text: String) {
         withAnimation { toast = text }
         Task {
@@ -126,7 +151,7 @@ struct ChatView: View {
         }
     }
 
-    private static let thinkingID = "thinking-indicator"
+    private static let thinkingID = "agent-run-indicator"
 
     private func scrollToBottom(_ proxy: ScrollViewProxy, messages: [ChatMessage]) {
         withAnimation(.easeOut(duration: 0.2)) {
@@ -149,35 +174,50 @@ struct ChatView: View {
                 .lineLimit(1...5)
                 .textFieldStyle(.plain)
                 .focused($isInputFocused)
+                .disabled(env.isSending)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
                 .liquidGlass(cornerRadius: 20)
 
-            Button {
-                send(in: repository)
-            } label: {
-                Image(systemName: "arrow.up")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
-                    .contentShape(Circle())
+            if env.isSending {
+                Button {
+                    env.cancelSend()
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .liquidGlassCapsule(tint: .red, interactive: true)
+                .accessibilityLabel("中断对话")
+            } else {
+                Button {
+                    send(in: repository)
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .liquidGlassCapsule(tint: .accentColor, interactive: true)
+                .opacity(canSend ? 1 : 0.5)
+                .disabled(!canSend)
+                .accessibilityLabel("发送")
             }
-            .buttonStyle(.plain)
-            .liquidGlassCapsule(tint: .accentColor, interactive: true)
-            .opacity(canSend ? 1 : 0.5)
-            .disabled(!canSend)
-            .accessibilityLabel("发送")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(Color(.systemBackground))
     }
 
     private func send(in repository: Repository) {
         let text = input
         input = ""
         isInputFocused = false
-        Task { await env.send(text, in: repository) }
+        env.send(text, in: repository)
     }
 }
 
@@ -276,7 +316,7 @@ struct ConversationListView: View {
             .navigationTitle("对话")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
+                ToolbarItem(placement: .topBarLeading) {
                     Button("完成") { dismiss() }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -307,29 +347,80 @@ struct ConversationListView: View {
     }
 }
 
-// MARK: - Bubbles
+// MARK: - Agent 运行状态
 
-struct ThinkingBubble: View {
+/// 对话进行中展示的 agent 步骤卡片，让过程看起来像一次任务执行而不是单纯聊天。
+struct AgentRunView: View {
+    let status: String?
+
+    private static let steps = ["整理仓库上下文", "请求 AI 模型", "解析改动"]
+
+    private var currentStep: Int {
+        guard let status else { return 0 }
+        if status.contains("模型") { return 1 }
+        if status.contains("解析") { return 2 }
+        return 0
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
-            ProgressView()
-            Text("AI 正在思考…")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                Text("Burette Agent")
+                    .font(.caption.bold())
+                Spacer()
+                ProgressView().controlSize(.mini)
+            }
+            .foregroundStyle(.secondary)
+
+            ForEach(Array(Self.steps.enumerated()), id: \.offset) { index, step in
+                HStack(spacing: 8) {
+                    Group {
+                        if index < currentStep {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(Color.green)
+                        } else if index == currentStep {
+                            Image(systemName: "circle.fill")
+                                .foregroundStyle(Color.accentColor)
+                        } else {
+                            Image(systemName: "circle")
+                                .foregroundStyle(Color.secondary)
+                        }
+                    }
+                    .font(.footnote)
+
+                    Text(step)
+                        .font(.footnote)
+                        .foregroundStyle(index <= currentStep ? Color.primary : Color.secondary)
+                }
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .liquidGlass(cornerRadius: 14)
     }
 }
+
+// MARK: - Bubbles
 
 struct MessageBubble: View {
     let message: ChatMessage
     let isApplied: Bool
     let onApply: ([FilePatch]) -> Void
 
+    private var isUser: Bool { message.role == .user }
+
     var body: some View {
-        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 8) {
+        VStack(alignment: isUser ? .trailing : .leading, spacing: 6) {
+            if !isUser {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                    Text("Burette Agent")
+                }
+                .font(.caption2.bold())
+                .foregroundStyle(.secondary)
+            }
+
             Text(message.content)
                 .font(.callout)
                 .textSelection(.enabled)
@@ -354,24 +445,28 @@ struct MessageBubble: View {
                     }
 
                     if isApplied {
-                        Label("已应用", systemImage: "checkmark.circle.fill")
+                        Label("已应用到工作区", systemImage: "checkmark.circle.fill")
                             .font(.caption.bold())
                             .foregroundStyle(.green)
                     } else {
-                        Button("应用改动") { onApply(patches) }
-                            .buttonStyle(.borderedProminent)
-                            .controlSize(.small)
+                        Button {
+                            onApply(patches)
+                        } label: {
+                            Label("应用改动", systemImage: "square.and.arrow.down")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
                     }
                 }
                 .padding(10)
                 .liquidGlass(cornerRadius: 12)
             }
         }
-        .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+        .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
     }
 
     private var bubbleBackground: Color {
-        message.role == .user ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.12)
+        isUser ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.12)
     }
 
     private func badge(_ kind: FilePatch.Kind) -> String {
