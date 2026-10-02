@@ -36,7 +36,11 @@ struct RepositorySyncService: Sendable {
         let tree = try await client.tree(owner: owner, repo: repo, sha: detail.tree.sha, recursive: true)
 
         let blobs = tree.tree.filter { $0.type == "blob" }
-        guard !blobs.isEmpty else { throw GitDataError.emptyRepository }
+        guard !blobs.isEmpty else {
+            Log.warning("远端仓库为空：\(owner)/\(repo)＠\(targetBranch)", .workspace)
+            throw GitDataError.emptyRepository
+        }
+        Log.debug("拉取树：\(owner)/\(repo)＠\(targetBranch)，\(blobs.count) 个 blob，base \(commitSHA.prefix(7))", .workspace)
 
         // 清空旧工作区，避免残留上一次的文件
         let folder = workspace.folder(for: repository)

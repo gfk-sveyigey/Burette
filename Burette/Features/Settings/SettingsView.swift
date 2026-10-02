@@ -1,16 +1,28 @@
 import SwiftUI
 
+enum AccountSheet: String, Identifiable {
+    case switchAccount
+    case editAccount
+
+    var id: String { rawValue }
+}
+
 struct SettingsView: View {
     @EnvironmentObject private var env: AppEnvironment
 
     @State private var editing: AIProviderConfig?
     @State private var checking: UUID?
     @State private var checkResults: [UUID: String] = [:]
-    @State private var showingAccountEditor = false
+    @State private var accountSheet: AccountSheet?
 
     var body: some View {
         List {
-            Section("AI 配置") {
+            Section {
+                if env.aiConfigs.isEmpty {
+                    Text("还没有 AI 配置，点右上角的加号添加。")
+                        .foregroundStyle(.secondary)
+                }
+
                 ForEach(env.aiConfigs) { config in
                     configRow(config)
                         .contentShape(Rectangle())
@@ -34,48 +46,75 @@ struct SettingsView: View {
                         }
                         .circularDeleteSwipe { env.removeConfig(config) }
                 }
+            } header: {
+                HStack {
+                    Text("AI 配置")
+                    Spacer()
+                    Button {
+                        newConfig()
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("添加配置")
+                }
             }
 
             Section("账户") {
-                HStack(spacing: 12) {
-                    avatar
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(env.currentUser?.login ?? "已登录 GitHub")
-                            .foregroundStyle(.primary)
-                        Text(env.currentUser?.name ?? "管理当前登录的账户")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
+                accountRow
+
+                Button {
+                    accountSheet = .switchAccount
+                } label: {
+                    Label("切换账户", systemImage: "person.crop.circle.badge.arrow.left")
                 }
 
                 Button {
-                    showingAccountEditor = true
+                    accountSheet = .editAccount
                 } label: {
-                    Label("切换账户 / 修改信息", systemImage: "person.crop.circle")
+                    Label("修改账户信息", systemImage: "pencil")
                 }
 
                 Button("退出登录", role: .destructive) { env.signOut() }
+            }
+
+            Section("诊断") {
+                NavigationLink {
+                    LogsView()
+                } label: {
+                    Label("运行日志", systemImage: "doc.text.magnifyingglass")
+                }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("设置")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button { newConfig() } label: {
-                    Image(systemName: "plus")
-                }
-                .accessibilityLabel("添加配置")
-            }
-        }
         .sheet(item: $editing) { config in
             AIProviderEditorView(config: config)
         }
-        .sheet(isPresented: $showingAccountEditor) {
-            AccountEditorView()
+        .sheet(item: $accountSheet) { sheet in
+            switch sheet {
+            case .switchAccount:
+                SwitchAccountView()
+            case .editAccount:
+                EditAccountView()
+            }
         }
         .task { await env.refreshCurrentUser() }
+    }
+
+    private var accountRow: some View {
+        HStack(spacing: 12) {
+            avatar
+            VStack(alignment: .leading, spacing: 2) {
+                Text(env.currentUser?.login ?? "已登录 GitHub")
+                    .foregroundStyle(.primary)
+                Text(env.currentUser?.name ?? "GitHub 账户")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
     }
 
     @ViewBuilder
@@ -142,6 +181,7 @@ struct SettingsView: View {
     private func check(_ config: AIProviderConfig) async {
         checking = config.id
         checkResults[config.id] = nil
+        Log.info("检测 AI 配置可用性：\(config.name)", .ai)
         let result = await env.checkAI(config)
         switch result {
         case .success:
@@ -203,7 +243,8 @@ struct AIProviderEditorView: View {
     }
 }
 
-struct AccountEditorView: View {
+/// 切换到另一个 GitHub 账户。
+struct SwitchAccountView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.dismiss) private var dismiss
 
@@ -214,14 +255,63 @@ struct AccountEditorView: View {
         NavigationStack {
             Form {
                 Section {
-                    SecureField("新的 Personal Access Token", text: $token)
+                    SecureField("另一个账号的 Personal Access Token", text: $token)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 } footer: {
-                    Text("填入另一个账号的 token 即可切换账户；重新填入当前账号的 token 可更新信息。")
+                    Text("登录到另一个 GitHub 账号。切换成功后，当前账号的仓库列表会被清空。")
                 }
             }
-            .navigationTitle("账户")
+            .navigationTitle("切换账户")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("切换") {
+                        let value = token
+                        isWorking = true
+                        Task {
+                            let ok = await env.switchAccount(token: value)
+                            isWorking = false
+                            if ok { dismiss() }
+                        }
+                    }
+                    .disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isWorking)
+                }
+            }
+        }
+    }
+}
+
+/// 修改当前账户的登录凭据（同一账号）。
+struct EditAccountView: View {
+    @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var token = ""
+    @State private var isWorking = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("当前账户") {
+                    LabeledContent("账号", value: env.currentUser?.login ?? "未知")
+                    if let name = env.currentUser?.name {
+                        LabeledContent("名称", value: name)
+                    }
+                }
+
+                Section {
+                    SecureField("当前账号的新 Personal Access Token", text: $token)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } footer: {
+                    Text("用于更新或续期当前账号的凭据，必须是同一账号的 token。要换成别的账号请使用「切换账户」。")
+                }
+            }
+            .navigationTitle("修改账户信息")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -232,7 +322,7 @@ struct AccountEditorView: View {
                         let value = token
                         isWorking = true
                         Task {
-                            let ok = await env.updateAccount(token: value)
+                            let ok = await env.updateAccountToken(token: value)
                             isWorking = false
                             if ok { dismiss() }
                         }

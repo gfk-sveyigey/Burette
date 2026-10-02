@@ -6,12 +6,17 @@ struct RepositoriesView: View {
     @State private var selection = Set<UUID>()
     @State private var editMode: EditMode = .inactive
 
+    /// 非多选模式下不绑定 selection，避免点开项目后该行一直保持选中高亮。
+    private var listSelection: Binding<Set<UUID>>? {
+        editMode == .active ? $selection : nil
+    }
+
     private var selectedRepositories: [Repository] {
         env.repositories.filter { selection.contains($0.id) }
     }
 
     var body: some View {
-        List(selection: $selection) {
+        List(selection: listSelection) {
             if env.repositories.isEmpty {
                 ContentUnavailableView(
                     "还没有仓库",
@@ -58,6 +63,16 @@ struct RepositoriesView: View {
         .navigationTitle("仓库")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItemGroup(placement: .topBarLeading) {
+                if editMode == .active {
+                    Button("完成") { exitSelection() }
+                } else {
+                    Button("选择") {
+                        selection = []
+                        editMode = .active
+                    }
+                }
+            }
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if editMode == .active {
                     Menu {
@@ -75,20 +90,17 @@ struct RepositoriesView: View {
                         Image(systemName: "ellipsis.circle")
                     }
                     .disabled(selection.isEmpty)
-
-                    Button("完成") { exitSelection() }
                 } else {
                     Button {
                         showingPicker = true
                     } label: {
                         Image(systemName: "plus")
                     }
-                    Button("选择") {
-                        selection = []
-                        editMode = .active
-                    }
                 }
             }
+        }
+        .onAppear {
+            if editMode != .active { selection = [] }
         }
         .sheet(isPresented: $showingPicker) {
             RepositoryPickerView()
@@ -231,6 +243,7 @@ struct RepositoryPickerView: View {
             repositories = try await env.github.repositories()
         } catch {
             errorMessage = error.localizedDescription
+            Log.error(error, .github)
         }
         isLoading = false
     }

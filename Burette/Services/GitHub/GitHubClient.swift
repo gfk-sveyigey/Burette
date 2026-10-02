@@ -216,25 +216,34 @@ actor GitHubClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
+        Log.debug("GitHub \(method) \(path)", .github)
+
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
+            Log.error("GitHub \(method) \(path) 返回了无效响应", .github)
             throw GitHubError.http(status: -1, message: "无效的服务器响应。")
         }
 
         switch http.statusCode {
         case 200..<300:
+            Log.debug("GitHub \(method) \(path) → \(http.statusCode)", .github)
             return data
         case 401:
+            Log.error("GitHub \(method) \(path) → 401 未授权", .github)
             throw GitHubError.unauthorized
         case 403:
             if http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" {
+                Log.error("GitHub \(method) \(path) → 403 频率限制", .github)
                 throw GitHubError.rateLimited
             }
+            Log.error("GitHub \(method) \(path) → 403 拒绝访问", .github)
             throw GitHubError.unauthorized
         case 404:
+            Log.error("GitHub \(method) \(path) → 404 不存在", .github)
             throw GitHubError.notFound
         default:
             let message = String(data: data, encoding: .utf8) ?? ""
+            Log.error("GitHub \(method) \(path) → \(http.statusCode)", .github)
             throw GitHubError.http(status: http.statusCode, message: message)
         }
     }

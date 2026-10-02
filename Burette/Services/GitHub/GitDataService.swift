@@ -77,6 +77,7 @@ struct GitDataService: Sendable {
             sha: commit.sha
         )
 
+        Log.info("提交 \(entries.count) 个文件到 \(owner)/\(repo)＠\(branch)：\(commit.sha.prefix(7))", .github)
         return commit.sha
     }
 }

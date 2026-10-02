@@ -34,7 +34,7 @@
 | `Services/GitHub/` | REST 客户端与 Git Data API 提交流程 |
 | `Services/Workspace/` | 本地工作区读写、仓库与配置持久化 |
 | `Features/` | 按功能划分的界面：Auth / Repositories / Chat / Changes / Editor / Settings |
-| `Support/` | 通用视图与工具：Liquid Glass 封装、文件路径树（`FileNode`） |
+| `Support/` | 通用视图与工具：Liquid Glass 封装、文件路径树（`FileNode`）、日志（`Log` / `LogCenter`） |
 
 ## 3. 关键设计
 
@@ -70,6 +70,17 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 
 定义 `PersistenceStore` 协议，MVP 用 `JSONStore`（JSON 文件）实现，
 后续可无痛替换为 SQLite，调用方无需改动。
+
+### 3.6 日志
+
+`Support/Log.swift` 提供统一入口 `Log.debug/info/warning/error(_:_:)`，按分类
+（app / ui / github / ai / workspace / diff / persistence）写入：
+
+- OSLog（可在 Console.app 按子系统 `com.burette.app` 过滤）
+- 内存环形缓冲（最近 800 条，设置页「运行日志」可实时查看、按级别筛选、导出）
+- 应用支持目录 `Burette/Logs/burette.log`（超过 1 MB 轮转为 `burette.1.log`）
+
+日志中不会写入 Token / API Key 等明文密钥。
 
 ## 4. 并发约定
 

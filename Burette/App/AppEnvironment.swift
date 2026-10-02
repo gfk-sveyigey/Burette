@@ -89,6 +89,9 @@ final class AppEnvironment: ObservableObject {
                 await github.updateToken(token)
                 isAuthenticated = true
                 currentUser = try? await github.currentUser()
+                Log.info("已恢复登录：\(currentUser?.login ?? "未知账户")", .app)
+            } else {
+                Log.info("未找到已保存的登录凭据", .app)
             }
         } catch {
             lastError = error.localizedDescription
@@ -130,9 +133,11 @@ final class AppEnvironment: ObservableObject {
             try keychain.set(trimmed, for: KeychainStore.gitHubTokenKey)
             isAuthenticated = true
             lastError = nil
+            Log.info("登录成功：\(currentUser?.login ?? "未知账户")", .app)
         } catch {
             await github.updateToken(nil)
             lastError = error.localizedDescription
+            Log.error(error, .app)
         }
     }
 
@@ -144,12 +149,22 @@ final class AppEnvironment: ObservableObject {
         repositories = []
         selectedRepositoryID = nil
         persistAll()
+        Log.info("已退出登录", .app)
     }
 
-    /// 更新 / 切换账户：先用新 token 校验，失败则回滚到原 token。
-    /// 切换到不同账号时会清空当前仓库列表。
+    /// 切换到另一个 GitHub 账户：允许 login 变化，切换成功后清空仓库列表。
     @discardableResult
-    func updateAccount(token: String) async -> Bool {
+    func switchAccount(token: String) async -> Bool {
+        await applyAccount(token: token, allowSwitch: true)
+    }
+
+    /// 修改当前账户的登录凭据：要求新 token 仍属于当前账户。
+    @discardableResult
+    func updateAccountToken(token: String) async -> Bool {
+        await applyAccount(token: token, allowSwitch: false)
+    }
+
+    private func applyAccount(token: String, allowSwitch: Bool) async -> Bool {
         let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return false }
 
@@ -157,25 +172,40 @@ final class AppEnvironment: ObservableObject {
         do {
             await github.updateToken(trimmed)
             let user = try await github.currentUser()
+
+            if !allowSwitch, let previousLogin, previousLogin != user.login {
+                await restoreToken()
+                lastError = "这是另一个账号（\(user.login)），请使用「切换账户」。"
+                Log.warning("凭据属于其他账号：\(user.login)", .app)
+                return false
+            }
+
             try keychain.set(trimmed, for: KeychainStore.gitHubTokenKey)
             currentUser = user
             isAuthenticated = true
             lastError = nil
+            Log.info("账户凭据已更新：\(user.login)", .app)
 
-            if let previousLogin, previousLogin != user.login {
+            if allowSwitch, let previousLogin, previousLogin != user.login {
                 repositories = []
                 selectedRepositoryID = nil
                 persistAll()
+                Log.info("已切换账户：\(previousLogin) → \(user.login)", .app)
             }
             return true
         } catch {
-            if let old = try? keychain.get(KeychainStore.gitHubTokenKey), !old.isEmpty {
-                await github.updateToken(old)
-            } else {
-                await github.updateToken(nil)
-            }
+            await restoreToken()
             lastError = error.localizedDescription
+            Log.error(error, .app)
             return false
+        }
+    }
+
+    private func restoreToken() async {
+        if let old = try? keychain.get(KeychainStore.gitHubTokenKey), !old.isEmpty {
+            await github.updateToken(old)
+        } else {
+            await github.updateToken(nil)
         }
     }
 
@@ -196,6 +226,7 @@ final class AppEnvironment: ObservableObject {
         }
         if selectedRepositoryID == nil { selectedRepositoryID = repositories.first?.id }
         persistAll()
+        Log.info("添加了 \(remote.count) 个仓库，当前共 \(repositories.count) 个", .app)
     }
 
     func removeRepository(_ repository: Repository) {
@@ -207,11 +238,13 @@ final class AppEnvironment: ObservableObject {
         let folder = workspace.folder(for: repository)
         try? FileManager.default.removeItem(at: folder)
         persistAll()
+        Log.info("删除仓库：\(repository.fullName)", .app)
     }
 
     func clone(_ repository: Repository) async {
         busyMessage = "正在拉取 \(repository.fullName)…"
         defer { busyMessage = nil }
+        Log.info("开始拉取 \(repository.fullName)＠\(repository.currentBranch)", .workspace)
         do {
             let result = try await syncService.pull(repository: repository)
             if let index = repositories.firstIndex(where: { $0.id == repository.id }) {
@@ -219,8 +252,10 @@ final class AppEnvironment: ObservableObject {
                 repositories[index].lastSyncedAt = Date()
             }
             persistAll()
+            Log.info("拉取完成：\(repository.fullName)，\(result.fileCount) 个文件，base \(result.sha.prefix(7))", .workspace)
         } catch {
             lastError = error.localizedDescription
+            Log.error(error, .workspace)
         }
     }
 
@@ -292,6 +327,7 @@ final class AppEnvironment: ObservableObject {
 
         isSending = true
         defer { isSending = false }
+        Log.info("发送对话请求：\(repository.fullName)，\(trimmed.count) 字", .ai)
 
         var history = messages(for: repository)
         history.append(ChatMessage(role: .user, content: trimmed))
@@ -329,8 +365,10 @@ final class AppEnvironment: ObservableObject {
             updated.append(ChatMessage(role: .assistant, content: reply, patches: patches))
             messagesByRepository[repository.id] = updated
             persistAll()
+            Log.info("收到 AI 回复：\(reply.count) 字，解析出 \(patches?.count ?? 0) 个文件改动", .ai)
         } catch {
             lastError = error.localizedDescription
+            Log.error(error, .ai)
         }
     }
 
@@ -358,8 +396,10 @@ final class AppEnvironment: ObservableObject {
             }
             branchesByRepository[repository.id] = names
             persistAll()
+            Log.debug("加载分支：\(repository.fullName) → \(names.count) 个分支", .github)
         } catch {
             lastError = error.localizedDescription
+            Log.error(error, .github)
         }
     }
 
@@ -371,6 +411,7 @@ final class AppEnvironment: ObservableObject {
 
         busyMessage = "正在切换到 \(branch)…"
         defer { busyMessage = nil }
+        Log.info("切换分支：\(repository.fullName) → \(branch)", .github)
 
         do {
             var updated = repositories[index]
@@ -381,8 +422,10 @@ final class AppEnvironment: ObservableObject {
             repositories[index] = updated
             changesByRepository[repository.id] = []
             persistAll()
+            Log.info("分支切换完成：\(repository.fullName) → \(branch)", .github)
         } catch {
             lastError = error.localizedDescription
+            Log.error(error, .github)
         }
     }
 
@@ -409,8 +452,10 @@ final class AppEnvironment: ObservableObject {
                 )
             }
             persistAll()
+            Log.info("应用改动：\(patches.count) 个文件", .diff)
         } catch {
             lastError = error.localizedDescription
+            Log.error(error, .diff)
         }
     }
 
@@ -434,8 +479,10 @@ final class AppEnvironment: ObservableObject {
                 status: status
             )
             persistAll()
+            Log.info("保存文件：\(repository.fullName)/\(path)", .workspace)
         } catch {
             lastError = error.localizedDescription
+            Log.error(error, .workspace)
         }
     }
 
@@ -472,8 +519,10 @@ final class AppEnvironment: ObservableObject {
             remaining.removeAll { $0.isStaged }
             changesByRepository[repository.id] = remaining
             persistAll()
+            Log.info("提交并推送成功：\(staged.count) 个文件，新 commit \(sha.prefix(7))", .github)
         } catch {
             lastError = error.localizedDescription
+            Log.error(error, .github)
         }
     }
 
