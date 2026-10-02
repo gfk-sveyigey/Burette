@@ -5,7 +5,13 @@ struct ChatView: View {
 
     @State private var input = ""
     @State private var toast: String?
+    @State private var showingConversations = false
     @FocusState private var isInputFocused: Bool
+
+    private var navigationTitle: String {
+        guard let repository = env.selectedRepository else { return "对话" }
+        return env.currentConversation(for: repository)?.displayTitle ?? repository.name
+    }
 
     var body: some View {
         Group {
@@ -19,11 +25,29 @@ struct ChatView: View {
                 )
             }
         }
-        .navigationTitle(env.selectedRepository?.name ?? "对话")
+        .navigationTitle(navigationTitle)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                RepositoryMenuButton()
+                HStack(spacing: 18) {
+                    RepositoryMenuButton()
+                    Button {
+                        showingConversations = true
+                    } label: {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                    }
+                    .accessibilityLabel("对话列表")
+                }
+            }
+        }
+        .sheet(isPresented: $showingConversations) {
+            if let repository = env.selectedRepository {
+                ConversationListView(repository: repository)
+            }
+        }
+        .task(id: env.selectedRepositoryID) {
+            if let repository = env.selectedRepository {
+                env.ensureConversation(for: repository)
             }
         }
     }
@@ -183,6 +207,103 @@ struct RepositoryMenuButton: View {
             Image(systemName: "square.stack.3d.up")
         }
         .accessibilityLabel("切换仓库")
+    }
+}
+
+// MARK: - 对话管理
+
+struct ConversationListView: View {
+    @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
+
+    let repository: Repository
+
+    @State private var renaming: Conversation?
+    @State private var renameText = ""
+
+    private var isRenaming: Binding<Bool> {
+        Binding(
+            get: { renaming != nil },
+            set: { if !$0 { renaming = nil } }
+        )
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(env.conversations(for: repository)) { conversation in
+                    Button {
+                        env.selectConversation(conversation, in: repository)
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(conversation.displayTitle)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text(conversation.subtitle)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            if conversation.id == env.currentConversation(for: repository)?.id {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundStyle(.tint)
+                            }
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .contextMenu {
+                        Button {
+                            beginRename(conversation)
+                        } label: {
+                            Label("重命名", systemImage: "pencil")
+                        }
+                        Button(role: .destructive) {
+                            env.deleteConversation(conversation, in: repository)
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
+                    .circularDeleteSwipe {
+                        env.deleteConversation(conversation, in: repository)
+                    }
+                }
+            }
+            .listStyle(.insetGrouped)
+            .navigationTitle("对话")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("完成") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        env.newConversation(in: repository)
+                        dismiss()
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    .accessibilityLabel("新建对话")
+                }
+            }
+            .alert("重命名对话", isPresented: isRenaming, presenting: renaming) { conversation in
+                TextField("名称", text: $renameText)
+                Button("保存") {
+                    env.renameConversation(conversation, in: repository, title: renameText)
+                }
+                Button("取消", role: .cancel) {}
+            } message: { conversation in
+                Text(conversation.displayTitle)
+            }
+        }
+    }
+
+    private func beginRename(_ conversation: Conversation) {
+        renameText = conversation.title
+        renaming = conversation
     }
 }
 

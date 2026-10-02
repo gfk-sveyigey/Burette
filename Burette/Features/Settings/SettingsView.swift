@@ -73,31 +73,30 @@ struct SettingsView: View {
                 Button {
                     accountSheet = .switchAccount
                 } label: {
-                    Label("切换账户", systemImage: "person.crop.circle.badge.arrow.left")
-                        .foregroundStyle(.primary)
+                    accountLabel("切换账户", systemImage: "arrow.left.arrow.right.circle")
                 }
+                .buttonStyle(.plain)
 
                 Button {
                     accountSheet = .editAccount
                 } label: {
-                    Label("修改账户信息", systemImage: "pencil")
-                        .foregroundStyle(.primary)
+                    accountLabel("修改账户信息", systemImage: "pencil")
                 }
+                .buttonStyle(.plain)
 
                 Button {
                     showingSignOut = true
                 } label: {
-                    Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
-                        .foregroundStyle(.primary)
+                    accountLabel("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
                 }
+                .buttonStyle(.plain)
             }
 
             Section("诊断") {
                 NavigationLink {
                     LogsView()
                 } label: {
-                    Label("运行日志", systemImage: "doc.text.magnifyingglass")
-                        .foregroundStyle(.primary)
+                    accountLabel("运行日志", systemImage: "doc.text.magnifyingglass")
                 }
             }
         }
@@ -126,6 +125,18 @@ struct SettingsView: View {
         } message: {
             Text("退出后会清空本地已添加的仓库列表（工作区文件仍保留在沙盒里）。")
         }
+    }
+
+    /// 账户 / 诊断区统一用的行样式：图标固定宽度、文字与图标都用主色（浅色下为黑色）。
+    private func accountLabel(_ title: String, systemImage: String) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .frame(width: 22, alignment: .center)
+            Text(title)
+            Spacer()
+        }
+        .foregroundStyle(.primary)
+        .contentShape(Rectangle())
     }
 
     private var accountRow: some View {
