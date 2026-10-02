@@ -5,6 +5,8 @@ struct RepositoriesView: View {
     @State private var showingPicker = false
     @State private var selection = Set<UUID>()
     @State private var editMode: EditMode = .inactive
+    /// 每行的屏幕位置，用于双指滑动进入多选时选中起始点所在的行。
+    @State private var rowFrames: [UUID: CGRect] = [:]
 
     /// 非多选模式下不绑定 selection，避免点开项目后该行一直保持选中高亮。
     private var listSelection: Binding<Set<UUID>>? {
@@ -34,6 +36,14 @@ struct RepositoriesView: View {
                         hasUpdates: env.remoteUpdates[repository.id] == true
                     )
                 }
+                .background(
+                    GeometryReader { geo in
+                        Color.clear.preference(
+                            key: RepositoryRowFrameKey.self,
+                            value: [repository.id: geo.frame(in: .global)]
+                        )
+                    }
+                )
                 .task { await env.loadBranches(for: repository) }
                 .contextMenu {
                     Button {
@@ -69,10 +79,16 @@ struct RepositoriesView: View {
         }
         .listStyle(.insetGrouped)
         .environment(\.editMode, $editMode)
+        .onPreferenceChange(RepositoryRowFrameKey.self) { frames in
+            rowFrames = frames
+        }
         .background(
-            TwoFingerPanCatcher {
+            TwoFingerPanCatcher { point in
                 guard editMode != .active else { return }
                 selection = []
+                if let id = rowFrames.first(where: { $0.value.contains(point) })?.key {
+                    selection = [id]
+                }
                 editMode = .active
             }
         )
@@ -293,5 +309,15 @@ struct RepositoryPickerView: View {
             Log.error(error, .github)
         }
         isLoading = false
+    }
+}
+
+
+/// 收集仓库行在窗口中的位置。
+private struct RepositoryRowFrameKey: PreferenceKey {
+    static var defaultValue: [UUID: CGRect] { [:] }
+
+    static func reduce(value: inout [UUID: CGRect], nextValue: () -> [UUID: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }

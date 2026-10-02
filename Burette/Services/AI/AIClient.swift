@@ -35,7 +35,7 @@ struct AIClient: Sendable {
 
     /// 请求超时（秒）。代码生成往往较慢，给足时间。
     private let requestTimeout: TimeInterval = 180
-    private let maxAttempts = 3
+    private let maxAttempts = 4
 
     init(session: URLSession? = nil) {
         if let session {
@@ -74,8 +74,10 @@ struct AIClient: Sendable {
                 let retryable = Self.isRetryable(error)
                 Log.warning("AI 调用失败（第 \(attempt)/\(maxAttempts) 次）：\(error.localizedDescription)\(retryable ? "，将重试" : "")", .ai)
                 guard retryable, attempt < maxAttempts else { throw error }
-                let delay = UInt64(attempt) * 1_000_000_000
-                try? await Task.sleep(nanoseconds: delay)
+                // 指数退避，退到后台 / 网络抖动时给足恢复时间。
+                let seconds = min(8.0, pow(1.5, Double(attempt)))
+                Log.debug("等待 \(String(format: "%.1f", seconds)) 秒后重试", .ai)
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             }
         }
         throw lastError

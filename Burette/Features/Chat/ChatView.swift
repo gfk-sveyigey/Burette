@@ -77,7 +77,7 @@ struct ChatView: View {
                         }
 
                         if env.isSending {
-                            AgentRunView(status: env.agentStatus)
+                            AgentRunView(status: env.agentStatus, startedAt: env.agentStartedAt)
                                 .id(Self.thinkingID)
                         }
                     }
@@ -340,6 +340,7 @@ struct ConversationListView: View {
 /// 对话进行中展示的 agent 步骤卡片，让过程看起来像一次任务执行而不是单纯聊天。
 struct AgentRunView: View {
     let status: String?
+    let startedAt: Date?
 
     private static let steps = ["整理仓库上下文", "请求 AI 模型", "解析改动"]
 
@@ -351,12 +352,25 @@ struct AgentRunView: View {
     }
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            card(elapsed: elapsed(at: context.date))
+        }
+    }
+
+    private func elapsed(at date: Date) -> TimeInterval {
+        guard let startedAt else { return 0 }
+        return max(0, date.timeIntervalSince(startedAt))
+    }
+
+    private func card(elapsed: TimeInterval) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles")
                 Text("Burette Agent")
                     .font(.caption.bold())
                 Spacer()
+                Text(DurationFormat.short(elapsed))
+                    .font(.caption.monospacedDigit())
                 ProgressView().controlSize(.mini)
             }
             .foregroundStyle(.secondary)
@@ -413,10 +427,18 @@ struct MessageBubble: View {
                 .padding(12)
                 .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-            if !isUser, let patches = message.patches, !patches.isEmpty {
-                Label("已自动应用 \(patches.count) 个文件的改动", systemImage: "checkmark.circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.green)
+            if !isUser, message.duration != nil || (message.patches?.isEmpty == false) {
+                HStack(spacing: 10) {
+                    if let patches = message.patches, !patches.isEmpty {
+                        Label("已自动应用 \(patches.count) 个文件的改动", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                    }
+                    if let duration = message.duration {
+                        Label("用时 \(DurationFormat.short(duration))", systemImage: "clock")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .font(.caption2)
             }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
