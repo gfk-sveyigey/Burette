@@ -23,11 +23,14 @@ struct ChangesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("提交并推送") {
+                Button {
                     guard let repository = env.selectedRepository else { return }
                     commit(in: repository)
+                } label: {
+                    Image(systemName: "arrow.up.circle.fill")
                 }
                 .disabled(!canCommit)
+                .accessibilityLabel("提交并推送")
             }
         }
         .alert(

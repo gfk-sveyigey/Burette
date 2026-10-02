@@ -730,15 +730,29 @@ final class AppEnvironment: ObservableObject {
         Log.info("开始提交：\(repository.fullName)＠\(repository.currentBranch)，\(staged.count) 个文件", .github)
         do {
             let sha = try await gitData.commit(repository: repository, changes: staged, message: trimmed)
-            if let index = repositories.firstIndex(where: { $0.id == repository.id }) {
-                repositories[index].baseCommitSHA = sha
-                repositories[index].lastSyncedAt = Date()
-            }
             var remaining = pendingChanges(for: repository)
             remaining.removeAll { $0.isStaged }
             changesByRepository[repository.id] = remaining
             persistAll()
             Log.info("提交并推送成功：\(staged.count) 个文件，新 commit \(sha.prefix(7))", .github)
+
+            // 推送成功后重新拉取一次，让本地工作区与 base 跟上远端的最新提交。
+            busyMessage = "正在同步远端…"
+            do {
+                let result = try await syncService.pull(repository: repository)
+                if let index = repositories.firstIndex(where: { $0.id == repository.id }) {
+                    repositories[index].baseCommitSHA = result.sha
+                    repositories[index].lastSyncedAt = Date()
+                }
+                // 工作区已被远端内容整体覆盖，未提交的改动不再存在于磁盘上，一并清掉避免列表与工作区不一致。
+                changesByRepository[repository.id] = []
+                remoteUpdates[repository.id] = false
+                persistAll()
+                Log.info("推送后重新拉取完成：\(repository.fullName)，base \(result.sha.prefix(7))", .workspace)
+            } catch {
+                lastError = error.localizedDescription
+                Log.error(error, .workspace)
+            }
             return true
         } catch {
             lastError = error.localizedDescription
