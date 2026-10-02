@@ -1,0 +1,169 @@
+name: Build & Release
+
+# PR 合并到 main 后：编译 + 打包 + 发布 Release（版本号取自仓库根目录的 VERSION 文件）。
+# 标签 v<VERSION> 已存在时跳过，不重复发布。
+on:
+  pull_request:
+    branches: [ main ]
+    types: [ closed ]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    if: github.event.pull_request.merged == true
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Select Xcode 26
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26.6'
+
+      # Burette.xcodeproj 由 XcodeGen 生成，仓库里不提交
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Validate Info.plist
+        run: |
+          set -e
+          test -f Info.plist || { echo "::error::Info.plist not found"; exit 1; }
+          plutil -lint Info.plist
+          # 关键键必须是真正的布尔 true
+          plutil -extract UIFileSharingEnabled raw Info.plist | grep -qx true \
+            || { echo "::error::UIFileSharingEnabled must be <true/>"; exit 1; }
+          plutil -extract LSSupportsOpeningDocumentsInPlace raw Info.plist | grep -qx true \
+            || { echo "::error::LSSupportsOpeningDocumentsInPlace must be <true/>"; exit 1; }
+
+      - name: Read version
+        id: version
+        run: |
+          set -e
+          if [ ! -f VERSION ]; then
+            echo "::error::VERSION file not found in repository root"
+            exit 1
+          fi
+
+          RAW=$(tr -d '[:space:]' < VERSION)
+          if [ -z "$RAW" ]; then
+            echo "::error::VERSION file is empty"
+            exit 1
+          fi
+
+          if ! echo "$RAW" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "::error::VERSION '$RAW' is not a valid semver"
+            exit 1
+          fi
+
+          echo "raw=$RAW" >> "$GITHUB_OUTPUT"
+          echo "tag=v$RAW" >> "$GITHUB_OUTPUT"
+          echo "Version: $RAW"
+
+      - name: Check existing tag
+        id: check
+        run: |
+          set -e
+          TAG="${{ steps.version.outputs.tag }}"
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG already exists; skipping release."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG does not exist; will release."
+          fi
+
+      - name: Save PR body
+        if: steps.check.outputs.exists == 'false'
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -e
+          mkdir -p build
+          if [ -z "$PR_BODY" ]; then
+            printf '_No description provided._\n' > build/PR_BODY.md
+          else
+            printf '%s\n' "$PR_BODY" > build/PR_BODY.md
+          fi
+
+      - name: Build unsigned iOS app
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -e
+          rm -rf build/DerivedData
+
+          xcodebuild \
+            -project Burette.xcodeproj \
+            -scheme Burette \
+            -sdk iphoneos \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            MARKETING_VERSION='${{ steps.version.outputs.raw }}' \
+            CURRENT_PROJECT_VERSION='${{ github.run_number }}' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+
+      - name: Package unsigned IPA
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -e
+          APP="build/DerivedData/Build/Products/Release-iphoneos/Burette.app"
+          IPA="build/Burette-${{ steps.version.outputs.raw }}-unsigned.ipa"
+
+          test -d "$APP"
+          rm -rf build/Payload "$IPA"
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/Burette.app
+
+          cd build
+          /usr/bin/zip -qry "$(basename "$IPA")" Payload
+          cd ..
+          rm -rf build/Payload
+
+          test -f "$IPA"
+          ls -lh "$IPA"
+
+      - name: Calculate SHA256
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          set -e
+          IPA="build/Burette-${{ steps.version.outputs.raw }}-unsigned.ipa"
+          SHA256=$(shasum -a 256 "$IPA" | awk '{print $1}')
+          printf '%s  %s\n' "$SHA256" "$(basename "$IPA")" > build/SHA256.txt
+
+          {
+            echo ""
+            echo "---"
+            echo ""
+            echo "### SHA256"
+            echo ""
+            echo '```text'
+            cat build/SHA256.txt
+            echo '```'
+          } >> build/PR_BODY.md
+
+      - name: Create Release
+        if: steps.check.outputs.exists == 'false'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: "Burette ${{ steps.version.outputs.tag }}"
+          body_path: build/PR_BODY.md
+          files: |
+            build/Burette-${{ steps.version.outputs.raw }}-unsigned.ipa
+            build/SHA256.txt
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.raw, '-') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
