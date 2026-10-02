@@ -44,7 +44,12 @@ struct RepositoriesView: View {
                         )
                     }
                 )
-                .task { await env.loadBranches(for: repository) }
+                .task {
+                    // 只在尚未加载过时请求分支，避免滚动时反复触发（被取消的请求现在也不会再弹错）。
+                    if env.branchesByRepository[repository.id] == nil {
+                        await env.loadBranches(for: repository)
+                    }
+                }
                 .contextMenu {
                     Button {
                         Task { await env.clone(repository) }

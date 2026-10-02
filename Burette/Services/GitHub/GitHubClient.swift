@@ -239,7 +239,11 @@ actor GitHubClient {
         do {
             (data, response) = try await session.data(for: request)
         } catch {
-            Log.error("GitHub \(method) \(path) 网络失败：\(error.localizedDescription)", .github)
+            if Cancellation.isCancellation(error) {
+                Log.debug("GitHub \(method) \(path) 请求已取消", .github)
+            } else {
+                Log.error("GitHub \(method) \(path) 网络失败：\(error.localizedDescription)", .github)
+            }
             throw error
         }
 
