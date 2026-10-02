@@ -25,8 +25,10 @@ final class AppEnvironment: ObservableObject {
     @Published var currentUser: GitHubUser?
     @Published var isAuthenticated = false
     @Published var isSending = false
-    /// 正在进行中的 agent 步骤描述（对话页顶部实时展示）。
+    /// 正在进行中的 agent 步骤描述（对话页实时展示）。
     @Published var agentStatus: String?
+    /// 最近一次自动应用改动的提示，界面读取后置空。
+    @Published var applyNotice: String?
     @Published var busyMessage: String?
     @Published var lastError: String?
 
@@ -508,13 +510,25 @@ final class AppEnvironment: ObservableObject {
             let diffText = DiffExtractor.extract(from: reply)
             let patches = try? DiffParser.parse(diffText)
 
-            appendMessage(
-                ChatMessage(role: .assistant, content: reply, patches: patches),
-                to: conversation.id,
-                in: repository
+            let message = ChatMessage(
+                role: .assistant,
+                content: DiffExtractor.prose(from: reply),
+                patches: patches
             )
+            appendMessage(message, to: conversation.id, in: repository)
+
+            // 直接应用到工作区，界面只做通知，不需要用户手动确认。
+            if let patches, !patches.isEmpty {
+                if apply(patches: patches, in: repository, messageID: message.id) {
+                    applyNotice = "已自动应用 \(patches.count) 个文件的改动"
+                    Log.info("收到 AI 回复并自动应用：\(reply.count) 字，\(patches.count) 个文件改动", .ai)
+                } else {
+                    Log.warning("自动应用改动失败：\(lastError ?? "未知错误")", .diff)
+                }
+            } else {
+                Log.info("收到 AI 回复：\(reply.count) 字，没有可应用的改动", .ai)
+            }
             persistAll()
-            Log.info("收到 AI 回复：\(reply.count) 字，解析出 \(patches?.count ?? 0) 个文件改动", .ai)
         } catch {
             if Self.isCancellation(error) {
                 Log.info("对话请求已中断", .ai)

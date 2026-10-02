@@ -91,14 +91,9 @@ struct ChangesView: View {
         }
         .sheet(item: $preview) { change in
             NavigationStack {
-                ScrollView {
-                    Text(change.unifiedDiff())
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding()
-                }
-                .navigationTitle(change.path)
-                .navigationBarTitleDisplayMode(.inline)
+                DiffView(original: change.original, current: change.current)
+                    .navigationTitle(change.path)
+                    .navigationBarTitleDisplayMode(.inline)
             }
         }
     }
