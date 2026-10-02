@@ -430,8 +430,7 @@ struct MessageBubble: View {
             if !isUser, message.duration != nil || (message.patches?.isEmpty == false) {
                 HStack(spacing: 10) {
                     if let patches = message.patches, !patches.isEmpty {
-                        Label("已自动应用 \(patches.count) 个文件的改动", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
+                        applyBadge(count: patches.count)
                     }
                     if let duration = message.duration {
                         Label("用时 \(DurationFormat.short(duration))", systemImage: "clock")
@@ -442,6 +441,27 @@ struct MessageBubble: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+    }
+
+    /// 改动应用结果徽标：只有真正写入工作区才显示「已应用」。
+    @ViewBuilder
+    private func applyBadge(count: Int) -> some View {
+        if let state = message.applyState {
+            switch state {
+            case .applied:
+                Label("已应用 \(count) 个文件的改动", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+            case .partial:
+                Label("部分改动未能应用", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+            case .failed:
+                Label("改动未能应用", systemImage: "xmark.circle.fill")
+                    .foregroundStyle(.red)
+            }
+        } else {
+            Label("尚未应用", systemImage: "circle")
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var bubbleBackground: Color {

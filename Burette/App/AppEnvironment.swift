@@ -517,29 +517,37 @@ final class AppEnvironment: ObservableObject {
             let patches = try? DiffParser.parse(diffText)
 
             let elapsed = Date().timeIntervalSince(startedAt)
-            let message = ChatMessage(
-                role: .assistant,
-                content: DiffExtractor.prose(from: reply),
-                patches: patches,
-                duration: elapsed
-            )
-            appendMessage(message, to: conversation.id, in: repository)
+            let messageID = UUID()
 
-            // 直接应用到工作区，界面只做通知，不需要用户手动确认。
+            // 先应用改动，再按真实结果生成消息，避免失败时也显示「已应用」。
+            var applyState: ChatMessage.ApplyState?
             if let patches, !patches.isEmpty {
-                if apply(patches: patches, in: repository, messageID: message.id) {
+                let outcome = apply(patches: patches, in: repository, messageID: messageID)
+                if outcome.isComplete {
+                    applyState = .applied
                     applyNotice = "已自动应用 \(patches.count) 个文件的改动"
                     Log.info("收到 AI 回复并自动应用：\(reply.count) 字，\(patches.count) 个文件改动，用时 \(DurationFormat.short(elapsed))", .ai)
                 } else {
+                    applyState = outcome.isPartial ? .partial : .failed
                     // 用 toast 提示失败原因，不弹全局错误框打断。
-                    let reason = lastError ?? "未知错误"
+                    let reason = lastError ?? outcome.failureSummary ?? "未知错误"
                     lastError = nil
                     applyNotice = reason.count > 160 ? String(reason.prefix(160)) + "…" : reason
-                    Log.warning("自动应用改动失败：\(reason)", .diff)
+                    Log.warning("自动应用改动失败 \(outcome.applied)/\(patches.count)：\(reason)", .diff)
                 }
             } else {
                 Log.info("收到 AI 回复：\(reply.count) 字，没有可应用的改动", .ai)
             }
+
+            let message = ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: DiffExtractor.prose(from: reply),
+                patches: patches,
+                duration: elapsed,
+                applyState: applyState
+            )
+            appendMessage(message, to: conversation.id, in: repository)
             persistAll()
         } catch {
             if Cancellation.isCancellation(error) {
@@ -640,8 +648,19 @@ final class AppEnvironment: ObservableObject {
 
     // MARK: - 改动
 
+    /// 一次批量应用的结果。
+    struct ApplyOutcome {
+        let applied: Int
+        let failed: Int
+        let failureSummary: String?
+
+        var isComplete: Bool { failed == 0 }
+        var isPartial: Bool { applied > 0 && failed > 0 }
+    }
+
     @discardableResult
-    func apply(patches: [FilePatch], in repository: Repository, messageID: UUID? = nil) -> Bool {
+    func apply(patches: [FilePatch], in repository: Repository, messageID: UUID? = nil) -> ApplyOutcome {
+        var applied = 0
         var failures: [String] = []
 
         for patch in patches {
@@ -663,6 +682,7 @@ final class AppEnvironment: ObservableObject {
                     current: target.kind == .deleted ? "" : updated,
                     status: status(for: target.kind, original: original)
                 )
+                applied += 1
                 Log.debug("应用文件改动：\(target.path)", .diff)
             } catch {
                 failures.append("\(patch.path)：\(error.localizedDescription)")
@@ -677,7 +697,7 @@ final class AppEnvironment: ObservableObject {
                 appliedMessageIDs.insert(messageID)
             }
             Log.info("应用改动：\(patches.count) 个文件\(messageID == nil ? "" : "（来自消息 \(messageID!.uuidString.prefix(8))）")", .diff)
-            return true
+            return ApplyOutcome(applied: applied, failed: 0, failureSummary: nil)
         }
 
         let summary = failures.joined(separator: "；")
@@ -685,7 +705,7 @@ final class AppEnvironment: ObservableObject {
             ? "改动无法应用：\(summary)"
             : "部分改动无法应用（\(failures.count)/\(patches.count)）：\(summary)"
         Log.warning("改动应用失败 \(failures.count)/\(patches.count)：\(summary)", .diff)
-        return false
+        return ApplyOutcome(applied: applied, failed: failures.count, failureSummary: summary)
     }
 
     /// 模型偶尔会把路径写错（内容其实属于另一个文件）。某个改动在声明的文件里定位不到时，

@@ -8,6 +8,13 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         case assistant
     }
 
+    /// 这条回复里的改动最终是否写入了工作区。
+    enum ApplyState: String, Codable, Sendable {
+        case applied
+        case partial
+        case failed
+    }
+
     var id: UUID
     var role: Role
     var content: String
@@ -19,13 +26,17 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
     /// 生成这条消息所用的时长（秒），仅 assistant 消息有值。
     var duration: TimeInterval?
 
+    /// 改动应用结果，nil 表示这条回复没有改动。
+    var applyState: ApplyState?
+
     init(
         id: UUID = UUID(),
         role: Role,
         content: String,
         createdAt: Date = Date(),
         patches: [FilePatch]? = nil,
-        duration: TimeInterval? = nil
+        duration: TimeInterval? = nil,
+        applyState: ApplyState? = nil
     ) {
         self.id = id
         self.role = role
@@ -33,6 +44,7 @@ struct ChatMessage: Identifiable, Codable, Hashable, Sendable {
         self.createdAt = createdAt
         self.patches = patches
         self.duration = duration
+        self.applyState = applyState
     }
 
     /// 转换为 OpenAI 兼容的消息体。
