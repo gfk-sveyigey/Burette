@@ -27,6 +27,8 @@ final class AppEnvironment: ObservableObject {
     @Published var isSending = false
     /// 正在进行中的 agent 步骤描述（对话页实时展示）。
     @Published var agentStatus: String?
+    /// 本次请求的开始时间，用于界面显示已用时长。
+    @Published var agentStartedAt: Date?
     /// 最近一次自动应用改动的提示，界面读取后置空。
     @Published var applyNotice: String?
     @Published var busyMessage: String?
@@ -464,9 +466,12 @@ final class AppEnvironment: ObservableObject {
         }
 
         isSending = true
+        let startedAt = Date()
+        agentStartedAt = startedAt
         defer {
             isSending = false
             agentStatus = nil
+            agentStartedAt = nil
         }
         Log.info("发送对话请求：\(repository.fullName)，\(trimmed.count) 字", .ai)
 
@@ -482,10 +487,8 @@ final class AppEnvironment: ObservableObject {
 
         let files: [FileContext]
         if contextPaths.isEmpty {
-            // 未显式指定时，把该项目所有文本文件都作为参考。
-            files = snapshot.keys.sorted().compactMap { path in
-                snapshot[path].map { FileContext(path: path, content: $0) }
-            }
+            // 未显式指定时把整个项目作为参考；超出预算会自动挑选相关文件并截断。
+            files = PromptBuilder.contextFiles(for: trimmed, snapshot: snapshot)
         } else {
             files = contextPaths.compactMap { path in
                 guard let content = snapshot[path] else { return nil }
@@ -498,9 +501,14 @@ final class AppEnvironment: ObservableObject {
 
         var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
         apiMessages.append(PromptBuilder.contextMessage(fileTree: tree, files: files))
-        for message in history.suffix(20) where message.role != .system {
+        for message in history.suffix(12) where message.role != .system {
             apiMessages.append(message.apiMessage)
         }
+
+        // 退到后台 / 锁屏时申请额外执行时间，尽量让请求跑完。
+        let backgroundTask = BackgroundTask()
+        backgroundTask.begin("AIRequest")
+        defer { backgroundTask.end() }
 
         do {
             agentStatus = "正在请求 AI 模型…"
@@ -510,10 +518,12 @@ final class AppEnvironment: ObservableObject {
             let diffText = DiffExtractor.extract(from: reply)
             let patches = try? DiffParser.parse(diffText)
 
+            let elapsed = Date().timeIntervalSince(startedAt)
             let message = ChatMessage(
                 role: .assistant,
                 content: DiffExtractor.prose(from: reply),
-                patches: patches
+                patches: patches,
+                duration: elapsed
             )
             appendMessage(message, to: conversation.id, in: repository)
 
@@ -521,9 +531,13 @@ final class AppEnvironment: ObservableObject {
             if let patches, !patches.isEmpty {
                 if apply(patches: patches, in: repository, messageID: message.id) {
                     applyNotice = "已自动应用 \(patches.count) 个文件的改动"
-                    Log.info("收到 AI 回复并自动应用：\(reply.count) 字，\(patches.count) 个文件改动", .ai)
+                    Log.info("收到 AI 回复并自动应用：\(reply.count) 字，\(patches.count) 个文件改动，用时 \(DurationFormat.short(elapsed))", .ai)
                 } else {
-                    Log.warning("自动应用改动失败：\(lastError ?? "未知错误")", .diff)
+                    // 用 toast 提示失败原因，不弹全局错误框打断。
+                    let reason = lastError ?? "未知错误"
+                    lastError = nil
+                    applyNotice = "自动应用失败：\(reason)"
+                    Log.warning("自动应用改动失败：\(reason)", .diff)
                 }
             } else {
                 Log.info("收到 AI 回复：\(reply.count) 字，没有可应用的改动", .ai)

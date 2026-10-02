@@ -93,6 +93,9 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 - 发送时把整个项目文件作为上下文（contextPaths 非空时只取指定文件），依次经过「整理上下文 → 请求模型 → 解析 diff」，agentStatus 实时暴露给界面，由 AgentRunView 以步骤卡片呈现，使过程更像一次 agent 任务执行。
 - send 为非阻塞：内部持有 sendTask，再次发送或点击停止键会调用 cancelSend() 取消在途请求，取消不写入错误提示。
 - AI 返回的 diff 会自动应用到工作区（agentStatus 走完后由 AppEnvironment.apply 写入），界面只展示说明文字与「已自动应用 N 个文件」提示；气泡正文用 DiffExtractor.prose 去掉 diff 原文。
+- 稳定性：请求期间用 BackgroundTask 申请后台执行时间，退到后台 / 锁屏时尽量跑完；上下文按字符预算裁剪（PromptBuilder.contextFiles，超出时优先相关文件并截断），历史只带最近 12 条；AIClient 最多重试 4 次并指数退避。
+- 界面用 agentStartedAt 实时显示已用时长，回复气泡展示最终用时。
+- 改动页用 LineDiff + DiffView 以 GitHub 风格展示：旧/新行号 + 增删颜色 + 统计条；PatchApplier 在行号不准时按内容模糊定位，整文件重写则直接采用新内容。
 
 ## 4. 并发约定
 

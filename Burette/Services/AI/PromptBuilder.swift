@@ -22,6 +22,7 @@ enum PromptBuilder {
     - 每个修改块以 @@ -旧起始,行数 +新起始,行数 @@ 开头。
     - 上下文行以空格开头，新增行以 + 开头，删除行以 - 开头。
     - 不要臆造未提供的文件内容，上下文行必须与给定内容完全一致。
+    - @@ 行号必须与给定内容一致；行号错误会导致改动无法应用，请务必核对。
     - 如果要求不明确，先提出一个澄清问题，不要输出 diff。
     """
 
@@ -47,6 +48,46 @@ enum PromptBuilder {
             }
         }
         return AIChatMessage(role: "user", content: text)
+    }
+
+    /// 组装上下文文件：总长度在预算内时包含全部文件，超出时优先相关文件并做截断，
+    /// 避免一次请求塞入整个大仓库导致耗时过长或超时。
+    static func contextFiles(
+        for instruction: String,
+        snapshot: [String: String],
+        budget: Int = 120_000,
+        perFileLimit: Int = 24_000
+    ) -> [FileContext] {
+        let total = snapshot.values.reduce(0) { $0 + $1.count }
+        var ordered: [String] = []
+        var seen = Set<String>()
+
+        if total <= budget {
+            ordered = snapshot.keys.sorted()
+        } else {
+            for file in relevantFiles(for: instruction, in: snapshot, limit: 20) {
+                if seen.insert(file.path).inserted { ordered.append(file.path) }
+            }
+            for path in snapshot.keys.sorted() {
+                if seen.insert(path).inserted { ordered.append(path) }
+            }
+        }
+
+        var remaining = budget
+        var result: [FileContext] = []
+        for path in ordered {
+            guard remaining > 0, let content = snapshot[path] else { break }
+            if content.count > perFileLimit {
+                result.append(
+                    FileContext(path: path, content: String(content.prefix(perFileLimit)) + "\n…（内容过长已截断）")
+                )
+                remaining -= perFileLimit
+            } else {
+                result.append(FileContext(path: path, content: content))
+                remaining -= content.count
+            }
+        }
+        return result
     }
 
     /// 根据用户指令挑选相关文件（按路径或内容包含关键词打分）。

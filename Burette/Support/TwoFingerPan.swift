@@ -7,7 +7,8 @@ import UIKit
 /// 纵向滑动超过阈值时触发回调（用于进入多选状态）。手势不吞掉触摸，
 /// 所以不会影响列表滚动和按钮点击。
 struct TwoFingerPanCatcher: UIViewRepresentable {
-    let onTrigger: () -> Void
+    /// 手势触发时回调，参数为双指按下的起始位置（窗口坐标）。
+    let onTrigger: (CGPoint) -> Void
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView(frame: .zero)
@@ -28,12 +29,13 @@ struct TwoFingerPanCatcher: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var onTrigger: () -> Void
+        var onTrigger: (CGPoint) -> Void
         private var installed = false
         private weak var window: UIWindow?
         private weak var pan: UIPanGestureRecognizer?
+        private var startLocation: CGPoint = .zero
 
-        init(onTrigger: @escaping () -> Void) {
+        init(onTrigger: @escaping (CGPoint) -> Void) {
             self.onTrigger = onTrigger
         }
 
@@ -54,12 +56,13 @@ struct TwoFingerPanCatcher: UIViewRepresentable {
             switch gesture.state {
             case .began:
                 // 双指手势期间锁住列表滚动，避免页面跟着滑。
-                lockScrollViews(at: gesture.location(in: nil))
+                startLocation = gesture.location(in: nil)
+                lockScrollViews(at: startLocation)
             case .ended:
                 unlockScrollViews()
                 let translation = gesture.translation(in: gesture.view)
                 guard abs(translation.y) > 40, abs(translation.y) > abs(translation.x) else { return }
-                onTrigger()
+                onTrigger(startLocation)
             case .cancelled, .failed:
                 unlockScrollViews()
             default:

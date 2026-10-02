@@ -27,8 +27,9 @@ struct ChangesView: View {
                     guard let repository = env.selectedRepository else { return }
                     commit(in: repository)
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
+                    Image(systemName: "arrow.up.circle")
                 }
+                .buttonStyle(.plain)
                 .disabled(!canCommit)
                 .accessibilityLabel("提交并推送")
             }

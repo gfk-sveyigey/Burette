@@ -124,11 +124,7 @@ struct SettingsView: View {
             }
         }
         .task { await env.refreshCurrentUser() }
-        .confirmationDialog(
-            "确定要退出登录吗？",
-            isPresented: $showingSignOut,
-            titleVisibility: .visible
-        ) {
+        .alert("确定要退出登录吗？", isPresented: $showingSignOut) {
             Button("退出登录", role: .destructive) { env.signOut() }
             Button("取消", role: .cancel) {}
         } message: {
