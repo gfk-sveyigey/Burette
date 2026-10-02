@@ -16,6 +16,7 @@ final class AppEnvironment: ObservableObject {
     @Published var selectedAIConfigID: UUID?
     @Published var messagesByRepository: [UUID: [ChatMessage]] = [:]
     @Published var changesByRepository: [UUID: [FileChange]] = [:]
+    @Published var branchesByRepository: [UUID: [String]] = [:]
 
     @Published var isAuthenticated = false
     @Published var isSending = false
@@ -165,6 +166,7 @@ final class AppEnvironment: ObservableObject {
         repositories.removeAll { $0.id == repository.id }
         changesByRepository[repository.id] = nil
         messagesByRepository[repository.id] = nil
+        branchesByRepository[repository.id] = nil
         if selectedRepositoryID == repository.id { selectedRepositoryID = repositories.first?.id }
         let folder = workspace.folder(for: repository)
         try? FileManager.default.removeItem(at: folder)
@@ -214,7 +216,8 @@ final class AppEnvironment: ObservableObject {
 
     // MARK: - 对话
 
-    func send(_ text: String, in repository: Repository) async {
+    /// contextPaths 非空时只把这些文件作为上下文；否则按关键词自动挑选。
+    func send(_ text: String, in repository: Repository, contextPaths: [String] = []) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -238,7 +241,16 @@ final class AppEnvironment: ObservableObject {
 
         let snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
         let tree = (try? workspace.listFiles(repository: repository)) ?? []
-        let files = PromptBuilder.relevantFiles(for: trimmed, in: snapshot)
+
+        let files: [FileContext]
+        if contextPaths.isEmpty {
+            files = PromptBuilder.relevantFiles(for: trimmed, in: snapshot)
+        } else {
+            files = contextPaths.compactMap { path in
+                guard let content = snapshot[path] else { return nil }
+                return FileContext(path: path, content: content)
+            }
+        }
 
         var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
         apiMessages.append(PromptBuilder.contextMessage(fileTree: tree, files: files))
@@ -254,6 +266,58 @@ final class AppEnvironment: ObservableObject {
             var updated = messagesByRepository[repository.id] ?? []
             updated.append(ChatMessage(role: .assistant, content: reply, patches: patches))
             messagesByRepository[repository.id] = updated
+            persistAll()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// 读取指定文件内容，用于对话上下文。
+    func fileContents(for repository: Repository, paths: [String]) -> [FileContext] {
+        let snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
+        return paths.compactMap { path in
+            guard let content = snapshot[path] else { return nil }
+            return FileContext(path: path, content: content)
+        }
+    }
+
+    // MARK: - 分支
+
+    func branches(for repository: Repository) -> [String] {
+        branchesByRepository[repository.id] ?? [repository.currentBranch]
+    }
+
+    func loadBranches(for repository: Repository) async {
+        do {
+            let list = try await github.branches(owner: repository.owner, repo: repository.name)
+            var names = list.map(\.name)
+            if !names.contains(repository.currentBranch) {
+                names.insert(repository.currentBranch, at: 0)
+            }
+            branchesByRepository[repository.id] = names
+            persistAll()
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// 切换分支：更新元数据后按新分支重新拉取工作区。
+    /// 切换会丢弃当前未提交的改动（旧 base 已失效）。
+    func switchBranch(_ repository: Repository, to branch: String) async {
+        guard branch != repository.currentBranch,
+              let index = repositories.firstIndex(where: { $0.id == repository.id }) else { return }
+
+        busyMessage = "正在切换到 \(branch)…"
+        defer { busyMessage = nil }
+
+        do {
+            var updated = repositories[index]
+            updated.currentBranch = branch
+            let result = try await syncService.pull(repository: updated, branch: branch)
+            updated.baseCommitSHA = result.sha
+            updated.lastSyncedAt = Date()
+            repositories[index] = updated
+            changesByRepository[repository.id] = []
             persistAll()
         } catch {
             lastError = error.localizedDescription

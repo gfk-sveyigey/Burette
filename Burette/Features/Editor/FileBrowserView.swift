@@ -4,17 +4,28 @@ struct FileBrowserView: View {
     @EnvironmentObject private var env: AppEnvironment
     let repository: Repository
 
-    @State private var files: [String] = []
+    @State private var nodes: [FileNode] = []
+    @State private var isLoaded = false
 
     var body: some View {
-        List(files, id: \.self) { path in
-            NavigationLink(path) {
-                EditorView(repository: repository, path: path)
+        List(nodes, children: \.subnodes) { node in
+            if node.isDirectory {
+                Label(node.name, systemImage: "folder")
+                    .foregroundStyle(.primary)
+            } else {
+                NavigationLink(value: node) {
+                    Label(node.name, systemImage: "doc.text")
+                        .foregroundStyle(.primary)
+                }
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle(repository.name)
+        .navigationDestination(for: FileNode.self) { node in
+            EditorView(repository: repository, path: node.path)
+        }
         .overlay {
-            if files.isEmpty {
+            if isLoaded && nodes.isEmpty {
                 ContentUnavailableView(
                     "工作区为空",
                     systemImage: "doc",
@@ -22,8 +33,12 @@ struct FileBrowserView: View {
                 )
             }
         }
-        .task {
-            files = (try? env.workspace.listFiles(repository: repository)) ?? []
-        }
+        .task { load() }
+    }
+
+    private func load() {
+        let files = (try? env.workspace.listFiles(repository: repository)) ?? []
+        nodes = FileNode.tree(from: files)
+        isLoaded = true
     }
 }

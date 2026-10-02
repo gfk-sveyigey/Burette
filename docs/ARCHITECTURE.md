@@ -34,6 +34,7 @@
 | `Services/GitHub/` | REST 客户端与 Git Data API 提交流程 |
 | `Services/Workspace/` | 本地工作区读写、仓库与配置持久化 |
 | `Features/` | 按功能划分的界面：Auth / Repositories / Chat / Changes / Editor / Settings |
+| `Support/` | 通用视图与工具：Liquid Glass 封装、文件路径树（`FileNode`） |
 
 ## 3. 关键设计
 
@@ -82,4 +83,4 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 |---|---|---|
 | 本地存储 SQLite | 先用 JSON 文件 | 已通过协议隔离，替换成本低 |
 | 语法高亮(Runestone) | 由 SPM 引入 | 见 project.yml |
-| Liquid Glass | 使用标准组件 | Xcode 26 编译自动生效 |
+| Liquid Glass | 标准组件 + `Support/LiquidGlass.swift` 封装 | iOS 26 用 `glassEffect`；iOS 17–25 降级为 `ultraThinMaterial` |
