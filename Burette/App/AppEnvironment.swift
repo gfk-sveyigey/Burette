@@ -291,9 +291,15 @@ final class AppEnvironment: ObservableObject {
     func saveEditedFile(_ repository: Repository, path: String, content: String) {
         do {
             let existing = pendingChanges(for: repository).first { $0.path == path }
-            let original = existing?.original ?? (try workspace.read(repository: repository, path: path))
+            let original: String?
+            if let recorded = existing?.original {
+                original = recorded
+            } else {
+                original = try workspace.read(repository: repository, path: path)
+            }
             try workspace.write(repository: repository, path: path, content: content)
-            let status: FileChange.Status = existing?.status ?? (original == nil ? .added : .modified)
+            let fallback: FileChange.Status = original == nil ? .added : .modified
+            let status: FileChange.Status = existing?.status ?? fallback
             record(
                 repository: repository,
                 path: path,

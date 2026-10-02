@@ -80,6 +80,9 @@ enum PromptBuilder {
         return scored
             .sorted { $0.score == $1.score ? $0.path < $1.path : $0.score > $1.score }
             .prefix(limit)
-            .compactMap { snapshot[$0.path].map { FileContext(path: $0.path, content: $0) } }
+            .compactMap { item -> FileContext? in
+                guard let content = snapshot[item.path] else { return nil }
+                return FileContext(path: item.path, content: content)
+            }
     }
 }
