@@ -46,6 +46,12 @@ enum PatchApplier {
         }
     }
 
+    /// 判断该 patch 能否在给定内容中定位并应用（用于校验模型给的路径是否正确）。
+    static func canLocate(_ patch: FilePatch, in original: String) -> Bool {
+        guard !patch.hunks.isEmpty else { return true }
+        return (try? applyHunks(patch, to: original)) != nil
+    }
+
     /// 批量应用，返回 path -> 新内容（删除的文件为空字符串）。
     static func apply(_ patches: [FilePatch], existingContents: [String: String]) throws -> [String: String] {
         var result: [String: String] = [:]

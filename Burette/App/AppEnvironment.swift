@@ -251,8 +251,7 @@ final class AppEnvironment: ObservableObject {
             Log.info("登录成功：\(currentUser?.login ?? "未知账户")，令牌权限：\(tokenScopes.isEmpty ? "未知" : tokenScopes.joined(separator: ", "))", .app)
         } catch {
             await github.updateToken(nil)
-            lastError = error.localizedDescription
-            Log.error(error, .app)
+            report(error, .app)
         }
     }
 
@@ -375,8 +374,7 @@ final class AppEnvironment: ObservableObject {
             persistAll()
             Log.info("拉取完成：\(repository.fullName)，\(result.fileCount) 个文件，base \(result.sha.prefix(7))", .workspace)
         } catch {
-            lastError = error.localizedDescription
-            Log.error(error, .workspace)
+            report(error, .workspace)
         }
     }
 
@@ -519,32 +517,40 @@ final class AppEnvironment: ObservableObject {
             let patches = try? DiffParser.parse(diffText)
 
             let elapsed = Date().timeIntervalSince(startedAt)
-            let message = ChatMessage(
-                role: .assistant,
-                content: DiffExtractor.prose(from: reply),
-                patches: patches,
-                duration: elapsed
-            )
-            appendMessage(message, to: conversation.id, in: repository)
+            let messageID = UUID()
 
-            // 直接应用到工作区，界面只做通知，不需要用户手动确认。
+            // 先应用改动，再按真实结果生成消息，避免失败时也显示「已应用」。
+            var applyState: ChatMessage.ApplyState?
             if let patches, !patches.isEmpty {
-                if apply(patches: patches, in: repository, messageID: message.id) {
+                let outcome = apply(patches: patches, in: repository, messageID: messageID)
+                if outcome.isComplete {
+                    applyState = .applied
                     applyNotice = "已自动应用 \(patches.count) 个文件的改动"
                     Log.info("收到 AI 回复并自动应用：\(reply.count) 字，\(patches.count) 个文件改动，用时 \(DurationFormat.short(elapsed))", .ai)
                 } else {
+                    applyState = outcome.isPartial ? .partial : .failed
                     // 用 toast 提示失败原因，不弹全局错误框打断。
-                    let reason = lastError ?? "未知错误"
+                    let reason = lastError ?? outcome.failureSummary ?? "未知错误"
                     lastError = nil
-                    applyNotice = "自动应用失败：\(reason)"
-                    Log.warning("自动应用改动失败：\(reason)", .diff)
+                    applyNotice = reason.count > 160 ? String(reason.prefix(160)) + "…" : reason
+                    Log.warning("自动应用改动失败 \(outcome.applied)/\(patches.count)：\(reason)", .diff)
                 }
             } else {
                 Log.info("收到 AI 回复：\(reply.count) 字，没有可应用的改动", .ai)
             }
+
+            let message = ChatMessage(
+                id: messageID,
+                role: .assistant,
+                content: DiffExtractor.prose(from: reply),
+                patches: patches,
+                duration: elapsed,
+                applyState: applyState
+            )
+            appendMessage(message, to: conversation.id, in: repository)
             persistAll()
         } catch {
-            if Self.isCancellation(error) {
+            if Cancellation.isCancellation(error) {
                 Log.info("对话请求已中断", .ai)
             } else {
                 lastError = error.localizedDescription
@@ -553,11 +559,6 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
-    private static func isCancellation(_ error: Error) -> Bool {
-        if error is CancellationError { return true }
-        let nsError = error as NSError
-        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
-    }
 
     /// 读取指定文件内容，用于对话上下文。
     func fileContents(for repository: Repository, paths: [String]) -> [FileContext] {
@@ -585,8 +586,7 @@ final class AppEnvironment: ObservableObject {
             persistAll()
             Log.debug("加载分支：\(repository.fullName) → \(names.count) 个分支", .github)
         } catch {
-            lastError = error.localizedDescription
-            Log.error(error, .github)
+            report(error, .github)
         }
     }
 
@@ -613,7 +613,11 @@ final class AppEnvironment: ObservableObject {
                 .github
             )
         } catch {
-            Log.warning("远端检查失败：\(repository.fullName)：\(error.localizedDescription)", .github)
+            if Cancellation.isCancellation(error) {
+                Log.debug("远端检查已取消：\(repository.fullName)", .github)
+            } else {
+                Log.warning("远端检查失败：\(repository.fullName)：\(error.localizedDescription)", .github)
+            }
         }
     }
 
@@ -638,45 +642,103 @@ final class AppEnvironment: ObservableObject {
             persistAll()
             Log.info("分支切换完成：\(repository.fullName) → \(branch)", .github)
         } catch {
-            lastError = error.localizedDescription
-            Log.error(error, .github)
+            report(error, .github)
         }
     }
 
     // MARK: - 改动
 
-    @discardableResult
-    func apply(patches: [FilePatch], in repository: Repository, messageID: UUID? = nil) -> Bool {
-        do {
-            for patch in patches {
-                let original = try workspace.read(repository: repository, path: patch.path)
-                let updated = try PatchApplier.apply(patch, to: original)
+    /// 一次批量应用的结果。
+    struct ApplyOutcome {
+        let applied: Int
+        let failed: Int
+        let failureSummary: String?
 
-                if patch.kind == .deleted {
-                    try workspace.delete(repository: repository, path: patch.path)
+        var isComplete: Bool { failed == 0 }
+        var isPartial: Bool { applied > 0 && failed > 0 }
+    }
+
+    @discardableResult
+    func apply(patches: [FilePatch], in repository: Repository, messageID: UUID? = nil) -> ApplyOutcome {
+        var applied = 0
+        var failures: [String] = []
+
+        for patch in patches {
+            do {
+                let target = resolvedPatch(patch, in: repository)
+                let original = try workspace.read(repository: repository, path: target.path)
+                let updated = try PatchApplier.apply(target, to: original)
+
+                if target.kind == .deleted {
+                    try workspace.delete(repository: repository, path: target.path)
                 } else {
-                    try workspace.write(repository: repository, path: patch.path, content: updated)
+                    try workspace.write(repository: repository, path: target.path, content: updated)
                 }
 
                 record(
                     repository: repository,
-                    path: patch.path,
+                    path: target.path,
                     original: original,
-                    current: patch.kind == .deleted ? "" : updated,
-                    status: status(for: patch.kind, original: original)
+                    current: target.kind == .deleted ? "" : updated,
+                    status: status(for: target.kind, original: original)
                 )
+                applied += 1
+                Log.debug("应用文件改动：\(target.path)", .diff)
+            } catch {
+                failures.append("\(patch.path)：\(error.localizedDescription)")
+                Log.error(error, .diff)
             }
+        }
+
+        persistAll()
+
+        if failures.isEmpty {
             if let messageID {
                 appliedMessageIDs.insert(messageID)
             }
-            persistAll()
             Log.info("应用改动：\(patches.count) 个文件\(messageID == nil ? "" : "（来自消息 \(messageID!.uuidString.prefix(8))）")", .diff)
-            return true
-        } catch {
-            lastError = error.localizedDescription
-            Log.error(error, .diff)
-            return false
+            return ApplyOutcome(applied: applied, failed: 0, failureSummary: nil)
         }
+
+        let summary = failures.joined(separator: "；")
+        lastError = failures.count == patches.count
+            ? "改动无法应用：\(summary)"
+            : "部分改动无法应用（\(failures.count)/\(patches.count)）：\(summary)"
+        Log.warning("改动应用失败 \(failures.count)/\(patches.count)：\(summary)", .diff)
+        return ApplyOutcome(applied: applied, failed: failures.count, failureSummary: summary)
+    }
+
+    /// 模型偶尔会把路径写错（内容其实属于另一个文件）。某个改动在声明的文件里定位不到时，
+    /// 在整个工作区里查找唯一包含这些旧内容的文件，并把改动改到该文件上。
+    private func resolvedPatch(_ patch: FilePatch, in repository: Repository) -> FilePatch {
+        guard patch.kind == .modified else { return patch }
+
+        var declared: String?
+        if let value = try? workspace.read(repository: repository, path: patch.path) {
+            declared = value
+        }
+        if let declared, PatchApplier.canLocate(patch, in: declared) {
+            return patch
+        }
+
+        let snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
+        let candidates = snapshot.filter { element in
+            element.key != patch.path && PatchApplier.canLocate(patch, in: element.value)
+        }
+
+        guard candidates.count == 1, let path = candidates.keys.first else {
+            if candidates.count > 1 {
+                Log.warning("改动 \(patch.path) 在多个文件中都能匹配，无法确定目标", .diff)
+            }
+            return patch
+        }
+
+        Log.warning("改动路径与内容不符，改为应用到 \(path)（原声明 \(patch.path)）", .diff)
+        var corrected = patch
+        corrected.oldPath = path
+        corrected.newPath = path
+        corrected.declaredKind = .modified
+        return corrected
     }
 
     /// 该消息的改动是否已经应用过。
@@ -706,8 +768,7 @@ final class AppEnvironment: ObservableObject {
             persistAll()
             Log.info("保存文件：\(repository.fullName)/\(path)", .workspace)
         } catch {
-            lastError = error.localizedDescription
-            Log.error(error, .workspace)
+            report(error, .workspace)
         }
     }
 
@@ -735,8 +796,7 @@ final class AppEnvironment: ObservableObject {
             }
             Log.info("丢弃改动并还原文件：\(repository.fullName)/\(change.path)", .workspace)
         } catch {
-            lastError = error.localizedDescription
-            Log.error(error, .workspace)
+            report(error, .workspace)
         }
         persistAll()
     }
@@ -778,18 +838,26 @@ final class AppEnvironment: ObservableObject {
                 persistAll()
                 Log.info("推送后重新拉取完成：\(repository.fullName)，base \(result.sha.prefix(7))", .workspace)
             } catch {
-                lastError = error.localizedDescription
-                Log.error(error, .workspace)
+                report(error, .workspace)
             }
             return true
         } catch {
-            lastError = error.localizedDescription
-            Log.error(error, .github)
+            report(error, .github)
             return false
         }
     }
 
     // MARK: - 私有
+
+    /// 统一错误上报：取消类错误只记调试日志，不弹错。
+    private func report(_ error: Error, _ category: LogCategory) {
+        if Cancellation.isCancellation(error) {
+            Log.debug("请求已取消：\(error.localizedDescription)", category)
+            return
+        }
+        lastError = error.localizedDescription
+        Log.error(error, category)
+    }
 
     private func status(for kind: FilePatch.Kind, original: String?) -> FileChange.Status {
         switch kind {
