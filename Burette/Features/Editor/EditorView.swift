@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// 简单的文本编辑器。
+/// 带语法高亮的文本编辑器。
 ///
-/// M0 先用 SwiftUI 的 TextEditor 打通链路；M3 会替换为 Runestone
-/// （行号、Tree-sitter 语法高亮、括号匹配、搜索替换）。
+/// 目前用轻量的正则高亮（见 Support/CodeHighlighting.swift）；
+/// M3 会替换为 Runestone（行号、Tree-sitter 高亮、搜索替换）。
 struct EditorView: View {
     @EnvironmentObject private var env: AppEnvironment
     let repository: Repository
@@ -12,18 +12,18 @@ struct EditorView: View {
     @State private var text = ""
     @State private var isLoaded = false
     @State private var loadError: String?
+    @State private var savedToast = false
 
     private var fileName: String {
         path.split(separator: "/").last.map { String($0) } ?? path
     }
 
+    private var language: CodeLanguage {
+        CodeLanguage.from(path: path)
+    }
+
     var body: some View {
-        TextEditor(text: $text)
-            .font(.system(.body, design: .monospaced))
-            .foregroundStyle(.primary)
-            .autocorrectionDisabled()
-            .textInputAutocapitalization(.never)
-            .scrollContentBackground(.hidden)
+        CodeEditor(text: $text, language: language)
             .background(Color(.systemBackground))
             .overlay(alignment: .topLeading) {
                 if !isLoaded {
@@ -35,17 +35,38 @@ struct EditorView: View {
                         .padding()
                 }
             }
+            .overlay(alignment: .top) {
+                if savedToast {
+                    Text("已保存到工作区")
+                        .font(.footnote.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 9)
+                        .background(Color.green.opacity(0.92), in: Capsule())
+                        .padding(.top, 12)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
             .navigationTitle(fileName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("保存") {
                         env.saveEditedFile(repository, path: path, content: text)
+                        showSaved()
                     }
                     .disabled(loadError != nil)
                 }
             }
             .task(id: path) { load() }
+    }
+
+    private func showSaved() {
+        withAnimation { savedToast = true }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            withAnimation { savedToast = false }
+        }
     }
 
     private func load() {

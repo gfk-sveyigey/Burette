@@ -14,6 +14,7 @@ struct SettingsView: View {
     @State private var checking: UUID?
     @State private var checkResults: [UUID: String] = [:]
     @State private var accountSheet: AccountSheet?
+    @State private var showingSignOut = false
 
     var body: some View {
         List {
@@ -63,16 +64,6 @@ struct SettingsView: View {
             Section("账户") {
                 accountRow
 
-                HStack {
-                    Label("令牌权限", systemImage: "key.horizontal")
-                        .foregroundStyle(.primary)
-                    Spacer()
-                    Text(env.tokenScopes.isEmpty ? "未知" : env.tokenScopes.joined(separator: ", "))
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-
                 if !env.tokenScopes.isEmpty && !env.tokenScopes.contains("repo") {
                     Label("缺少 repo 权限，可能无法推送", systemImage: "exclamationmark.triangle.fill")
                         .font(.caption)
@@ -83,18 +74,21 @@ struct SettingsView: View {
                     accountSheet = .switchAccount
                 } label: {
                     Label("切换账户", systemImage: "person.crop.circle.badge.arrow.left")
+                        .foregroundStyle(.primary)
                 }
 
                 Button {
                     accountSheet = .editAccount
                 } label: {
                     Label("修改账户信息", systemImage: "pencil")
+                        .foregroundStyle(.primary)
                 }
 
-                Button(role: .destructive) {
-                    env.signOut()
+                Button {
+                    showingSignOut = true
                 } label: {
                     Label("退出登录", systemImage: "rectangle.portrait.and.arrow.right")
+                        .foregroundStyle(.primary)
                 }
             }
 
@@ -103,6 +97,7 @@ struct SettingsView: View {
                     LogsView()
                 } label: {
                     Label("运行日志", systemImage: "doc.text.magnifyingglass")
+                        .foregroundStyle(.primary)
                 }
             }
         }
@@ -121,6 +116,16 @@ struct SettingsView: View {
             }
         }
         .task { await env.refreshCurrentUser() }
+        .confirmationDialog(
+            "确定要退出登录吗？",
+            isPresented: $showingSignOut,
+            titleVisibility: .visible
+        ) {
+            Button("退出登录", role: .destructive) { env.signOut() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("退出后会清空本地已添加的仓库列表（工作区文件仍保留在沙盒里）。")
+        }
     }
 
     private var accountRow: some View {

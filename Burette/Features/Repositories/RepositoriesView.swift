@@ -29,7 +29,10 @@ struct RepositoriesView: View {
                 NavigationLink {
                     FileBrowserView(repository: repository)
                 } label: {
-                    RepositoryRow(repository: repository)
+                    RepositoryRow(
+                        repository: repository,
+                        hasUpdates: env.remoteUpdates[repository.id] == true
+                    )
                 }
                 .task { await env.loadBranches(for: repository) }
                 .contextMenu {
@@ -54,26 +57,39 @@ struct RepositoriesView: View {
                     } label: {
                         Label("切换分支", systemImage: "arrow.triangle.branch")
                     }
+
+                    Button {
+                        Task { await env.checkForUpdates(for: repository) }
+                    } label: {
+                        Label("检查更新", systemImage: "arrow.clockwise")
+                    }
                 }
                 .circularDeleteSwipe { env.removeRepository(repository) }
             }
         }
         .listStyle(.insetGrouped)
         .environment(\.editMode, $editMode)
+        .background(
+            TwoFingerPanCatcher {
+                guard editMode != .active else { return }
+                selection = []
+                editMode = .active
+            }
+        )
         .navigationTitle("仓库")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItemGroup(placement: .topBarLeading) {
+            ToolbarItem(placement: .topBarLeading) {
                 if editMode == .active {
-                    Button("完成") { exitSelection() }
+                    roundButton("checkmark") { exitSelection() }
                 } else {
-                    Button("选择") {
+                    roundButton("checklist") {
                         selection = []
                         editMode = .active
                     }
                 }
             }
-            ToolbarItemGroup(placement: .topBarTrailing) {
+            ToolbarItem(placement: .topBarTrailing) {
                 if editMode == .active {
                     Menu {
                         Button {
@@ -81,30 +97,48 @@ struct RepositoriesView: View {
                         } label: {
                             Label("拉取选中", systemImage: "arrow.down.circle")
                         }
+                        Button {
+                            Task { await checkSelected() }
+                        } label: {
+                            Label("检查更新", systemImage: "arrow.clockwise")
+                        }
                         Button(role: .destructive) {
                             deleteSelected()
                         } label: {
                             Label("删除选中", systemImage: "trash")
                         }
                     } label: {
-                        Image(systemName: "ellipsis.circle")
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 15, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                            .background(Color.accentColor.opacity(0.15), in: Circle())
+                            .contentShape(Circle())
                     }
                     .disabled(selection.isEmpty)
                 } else {
-                    Button {
-                        showingPicker = true
-                    } label: {
-                        Image(systemName: "plus")
-                    }
+                    roundButton("plus") { showingPicker = true }
                 }
             }
         }
         .onAppear {
             if editMode != .active { selection = [] }
+            Task { await env.checkForUpdates() }
         }
+        .refreshable { await env.checkForUpdates() }
         .sheet(isPresented: $showingPicker) {
             RepositoryPickerView()
         }
+    }
+
+    private func roundButton(_ systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 30, height: 30)
+                .background(Color.accentColor.opacity(0.15), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func exitSelection() {
@@ -123,6 +157,12 @@ struct RepositoriesView: View {
         }
     }
 
+    private func checkSelected() async {
+        for repository in selectedRepositories {
+            await env.checkForUpdates(for: repository)
+        }
+    }
+
     private func deleteSelected() {
         for repository in selectedRepositories {
             env.removeRepository(repository)
@@ -133,6 +173,7 @@ struct RepositoriesView: View {
 
 struct RepositoryRow: View {
     let repository: Repository
+    var hasUpdates: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -144,6 +185,14 @@ struct RepositoryRow: View {
                     Image(systemName: "lock.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                }
+                if hasUpdates {
+                    Text("有更新")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange, in: Capsule())
                 }
             }
 

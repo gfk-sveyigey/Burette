@@ -4,6 +4,8 @@ struct ChangesView: View {
     @EnvironmentObject private var env: AppEnvironment
     @State private var commitMessage = ""
     @State private var preview: FileChange?
+    @State private var toast: String?
+    @State private var errorText: String?
     @FocusState private var isEditingMessage: Bool
 
     var body: some View {
@@ -19,11 +21,23 @@ struct ChangesView: View {
         }
         .navigationTitle("改动")
         .navigationBarTitleDisplayMode(.inline)
+        .alert(
+            "无法提交",
+            isPresented: Binding(
+                get: { errorText != nil },
+                set: { if !$0 { errorText = nil } }
+            )
+        ) {
+            Button("好", role: .cancel) { errorText = nil }
+        } message: {
+            Text(errorText ?? "")
+        }
     }
 
     @ViewBuilder
     private func content(for repository: Repository) -> some View {
         let changes = env.pendingChanges(for: repository)
+        let stagedCount = changes.filter { $0.isStaged }.count
 
         List {
             if changes.isEmpty {
@@ -40,19 +54,38 @@ struct ChangesView: View {
                 TextField("提交说明", text: $commitMessage, axis: .vertical)
                     .lineLimit(1...4)
                     .focused($isEditingMessage)
-                Button("提交并推送") {
-                    let message = commitMessage
-                    commitMessage = ""
-                    isEditingMessage = false
-                    Task { await env.commitStaged(in: repository, message: message) }
+
+                Button {
+                    commit(in: repository)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrow.up.circle.fill")
+                        Text("提交并推送")
+                        Spacer()
+                        Text("\(stagedCount) 个文件")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .contentShape(Rectangle())
                 }
-                .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .disabled(changes.isEmpty)
+            } footer: {
+                Text(changes.isEmpty ? "没有可提交的改动。" : "已勾选 \(stagedCount) 个文件，未勾选的文件不会被提交。")
             }
         }
-        .scrollDismissesKeyboard(.interactively)
-        .simultaneousGesture(
-            TapGesture().onEnded { isEditingMessage = false }
-        )
+        .scrollDismissesKeyboard(.immediately)
+        .overlay(alignment: .top) {
+            if let toast {
+                Text(toast)
+                    .font(.footnote.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 9)
+                    .background(Color.green.opacity(0.92), in: Capsule())
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .sheet(item: $preview) { change in
             NavigationStack {
                 ScrollView {
@@ -64,6 +97,28 @@ struct ChangesView: View {
                 .navigationTitle(change.path)
                 .navigationBarTitleDisplayMode(.inline)
             }
+        }
+    }
+
+    private func commit(in repository: Repository) {
+        isEditingMessage = false
+        let message = commitMessage
+        Task {
+            let ok = await env.commitStaged(in: repository, message: message)
+            if ok {
+                commitMessage = ""
+                showToast("已提交并推送")
+            } else {
+                errorText = env.lastError ?? "提交失败，请稍后再试。"
+            }
+        }
+    }
+
+    private func showToast(_ text: String) {
+        withAnimation { toast = text }
+        Task {
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            withAnimation { toast = nil }
         }
     }
 
