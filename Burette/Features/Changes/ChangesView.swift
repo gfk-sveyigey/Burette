@@ -21,6 +21,15 @@ struct ChangesView: View {
         }
         .navigationTitle("改动")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("提交并推送") {
+                    guard let repository = env.selectedRepository else { return }
+                    commit(in: repository)
+                }
+                .disabled(!canCommit)
+            }
+        }
         .alert(
             "无法提交",
             isPresented: Binding(
@@ -32,6 +41,12 @@ struct ChangesView: View {
         } message: {
             Text(errorText ?? "")
         }
+    }
+
+    /// 当前仓库是否有可提交的改动。
+    private var canCommit: Bool {
+        guard let repository = env.selectedRepository else { return false }
+        return !env.pendingChanges(for: repository).isEmpty
     }
 
     @ViewBuilder
@@ -54,21 +69,6 @@ struct ChangesView: View {
                 TextField("提交说明", text: $commitMessage, axis: .vertical)
                     .lineLimit(1...4)
                     .focused($isEditingMessage)
-
-                Button {
-                    commit(in: repository)
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "arrow.up.circle.fill")
-                        Text("提交并推送")
-                        Spacer()
-                        Text("\(stagedCount) 个文件")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .disabled(changes.isEmpty)
             } footer: {
                 Text(changes.isEmpty ? "没有可提交的改动。" : "已勾选 \(stagedCount) 个文件，未勾选的文件不会被提交。")
             }

@@ -37,18 +37,7 @@ struct ChatView: View {
                 .accessibilityLabel("对话列表")
             }
             ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 14) {
-                    if env.isSending {
-                        Button {
-                            env.cancelSend()
-                        } label: {
-                            Image(systemName: "stop.fill")
-                                .foregroundStyle(.red)
-                        }
-                        .accessibilityLabel("中断对话")
-                    }
-                    RepositoryMenuButton()
-                }
+                RepositoryMenuButton()
             }
         }
         .sheet(isPresented: $showingConversations) {
