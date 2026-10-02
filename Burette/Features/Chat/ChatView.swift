@@ -4,8 +4,6 @@ struct ChatView: View {
     @EnvironmentObject private var env: AppEnvironment
 
     @State private var input = ""
-    @State private var contextPaths: [String] = []
-    @State private var showingContextPicker = false
     @FocusState private var isInputFocused: Bool
 
     var body: some View {
@@ -26,15 +24,6 @@ struct ChatView: View {
             ToolbarItem(placement: .topBarTrailing) {
                 RepositoryMenuButton()
             }
-            ToolbarItemGroup(placement: .keyboard) {
-                Spacer()
-                Button("完成") { isInputFocused = false }
-            }
-        }
-        .sheet(isPresented: $showingContextPicker) {
-            if let repository = env.selectedRepository {
-                ContextPickerView(repository: repository, selected: $contextPaths)
-            }
         }
     }
 
@@ -49,7 +38,7 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         if messages.isEmpty && !env.isSending {
-                            Text("描述你想怎么改，AI 会返回 unified diff 供你预览和应用。\n\n点左下角回形针可以指定要参考的文件。")
+                            Text("描述你想怎么改，AI 会读取这个项目的文件并返回 unified diff 供你预览和应用。")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                                 .multilineTextAlignment(.center)
@@ -71,6 +60,9 @@ struct ChatView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
+                    .frame(maxWidth: .infinity)
+                    .contentShape(Rectangle())
+                    .onTapGesture { isInputFocused = false }
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .onChange(of: messages.count) { _, _ in
@@ -104,55 +96,28 @@ struct ChatView: View {
 
     @ViewBuilder
     private func inputBar(for repository: Repository) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if !contextPaths.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(contextPaths, id: \.self) { path in
-                            ContextChip(path: path) {
-                                contextPaths.removeAll { $0 == path }
-                            }
-                        }
-                    }
-                }
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("描述你想怎么改…", text: $input, axis: .vertical)
+                .lineLimit(1...5)
+                .textFieldStyle(.plain)
+                .focused($isInputFocused)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .liquidGlass(cornerRadius: 20)
+
+            Button {
+                send(in: repository)
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.headline)
+                    .frame(width: 42, height: 42)
+                    .contentShape(Circle())
             }
-
-            HStack(alignment: .bottom, spacing: 8) {
-                Button {
-                    isInputFocused = false
-                    showingContextPicker = true
-                } label: {
-                    Image(systemName: "paperclip")
-                        .font(.title3)
-                        .frame(width: 42, height: 42)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .liquidGlassCapsule()
-                .accessibilityLabel("引用文件")
-
-                TextField("描述你想怎么改…", text: $input, axis: .vertical)
-                    .lineLimit(1...5)
-                    .textFieldStyle(.plain)
-                    .focused($isInputFocused)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .liquidGlass(cornerRadius: 20)
-
-                Button {
-                    send(in: repository)
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.headline)
-                        .frame(width: 42, height: 42)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .liquidGlassCapsule(tint: .accentColor, interactive: true)
-                .opacity(canSend ? 1 : 0.5)
-                .disabled(!canSend)
-                .accessibilityLabel("发送")
-            }
+            .buttonStyle(.plain)
+            .liquidGlassCapsule(tint: .accentColor, interactive: true)
+            .opacity(canSend ? 1 : 0.5)
+            .disabled(!canSend)
+            .accessibilityLabel("发送")
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -161,11 +126,9 @@ struct ChatView: View {
 
     private func send(in repository: Repository) {
         let text = input
-        let paths = contextPaths
         input = ""
-        contextPaths = []
         isInputFocused = false
-        Task { await env.send(text, in: repository, contextPaths: paths) }
+        Task { await env.send(text, in: repository) }
     }
 }
 
@@ -211,31 +174,6 @@ struct ThinkingBubble: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .liquidGlass(cornerRadius: 14)
-    }
-}
-
-struct ContextChip: View {
-    let path: String
-    let onRemove: () -> Void
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: "doc.text")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Text(path)
-                .font(.caption2)
-                .lineLimit(1)
-            Button(action: onRemove) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 5)
-        .liquidGlass(cornerRadius: 10)
     }
 }
 

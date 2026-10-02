@@ -18,6 +18,7 @@ final class AppEnvironment: ObservableObject {
     @Published var changesByRepository: [UUID: [FileChange]] = [:]
     @Published var branchesByRepository: [UUID: [String]] = [:]
 
+    @Published var currentUser: GitHubUser?
     @Published var isAuthenticated = false
     @Published var isSending = false
     @Published var busyMessage: String?
@@ -87,6 +88,7 @@ final class AppEnvironment: ObservableObject {
             if let token = try keychain.get(KeychainStore.gitHubTokenKey), !token.isEmpty {
                 await github.updateToken(token)
                 isAuthenticated = true
+                currentUser = try? await github.currentUser()
             }
         } catch {
             lastError = error.localizedDescription
@@ -124,7 +126,7 @@ final class AppEnvironment: ObservableObject {
         guard !trimmed.isEmpty else { return }
         await github.updateToken(trimmed)
         do {
-            _ = try await github.currentUser()
+            currentUser = try await github.currentUser()
             try keychain.set(trimmed, for: KeychainStore.gitHubTokenKey)
             isAuthenticated = true
             lastError = nil
@@ -138,9 +140,43 @@ final class AppEnvironment: ObservableObject {
         try? keychain.delete(KeychainStore.gitHubTokenKey)
         Task { await github.updateToken(nil) }
         isAuthenticated = false
+        currentUser = nil
         repositories = []
         selectedRepositoryID = nil
         persistAll()
+    }
+
+    /// 更新 / 切换账户：先用新 token 校验，失败则回滚到原 token。
+    /// 切换到不同账号时会清空当前仓库列表。
+    @discardableResult
+    func updateAccount(token: String) async -> Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+
+        let previousLogin = currentUser?.login
+        do {
+            await github.updateToken(trimmed)
+            let user = try await github.currentUser()
+            try keychain.set(trimmed, for: KeychainStore.gitHubTokenKey)
+            currentUser = user
+            isAuthenticated = true
+            lastError = nil
+
+            if let previousLogin, previousLogin != user.login {
+                repositories = []
+                selectedRepositoryID = nil
+                persistAll()
+            }
+            return true
+        } catch {
+            if let old = try? keychain.get(KeychainStore.gitHubTokenKey), !old.isEmpty {
+                await github.updateToken(old)
+            } else {
+                await github.updateToken(nil)
+            }
+            lastError = error.localizedDescription
+            return false
+        }
     }
 
     // MARK: - 仓库
@@ -214,6 +250,29 @@ final class AppEnvironment: ObservableObject {
         (try? keychain.get(config.apiKeyID)) ?? ""
     }
 
+    /// 用一条极小的请求检测配置是否可用。
+    func checkAI(_ config: AIProviderConfig) async -> Result<String, Error> {
+        let apiKey = apiKey(for: config)
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .failure(AIError.missingAPIKey)
+        }
+        let messages = [
+            AIChatMessage(role: "system", content: "你是一个连通性检测服务，请只回复 OK。"),
+            AIChatMessage(role: "user", content: "ping")
+        ]
+        do {
+            let reply = try await aiClient.complete(config: config, apiKey: apiKey, messages: messages)
+            return .success(reply)
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// 刷新当前登录的 GitHub 账户信息。
+    func refreshCurrentUser() async {
+        currentUser = try? await github.currentUser()
+    }
+
     // MARK: - 对话
 
     /// contextPaths 非空时只把这些文件作为上下文；否则按关键词自动挑选。
@@ -244,7 +303,10 @@ final class AppEnvironment: ObservableObject {
 
         let files: [FileContext]
         if contextPaths.isEmpty {
-            files = PromptBuilder.relevantFiles(for: trimmed, in: snapshot)
+            // 未显式指定时，把该项目所有文本文件都作为参考。
+            files = snapshot.keys.sorted().compactMap { path in
+                snapshot[path].map { FileContext(path: path, content: $0) }
+            }
         } else {
             files = contextPaths.compactMap { path in
                 guard let content = snapshot[path] else { return nil }
