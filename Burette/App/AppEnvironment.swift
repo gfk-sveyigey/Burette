@@ -522,7 +522,27 @@ final class AppEnvironment: ObservableObject {
             // 先应用改动，再按真实结果生成消息，避免失败时也显示「已应用」。
             var applyState: ChatMessage.ApplyState?
             if let patches, !patches.isEmpty {
-                let outcome = apply(patches: patches, in: repository, messageID: messageID)
+                var outcome = apply(patches: patches, in: repository, messageID: messageID)
+
+                // 兜底：diff 应用不了的，请模型直接给出修改后的完整文件内容。
+                if !outcome.isComplete, !outcome.failedPaths.isEmpty {
+                    agentStatus = "正在修复无法应用的改动…"
+                    let repaired = await repairFiles(
+                        outcome.failedPaths,
+                        instruction: trimmed,
+                        in: repository
+                    )
+                    if repaired > 0 {
+                        let stillFailed = max(0, outcome.failed - repaired)
+                        outcome = ApplyOutcome(
+                            applied: outcome.applied + repaired,
+                            failed: stillFailed,
+                            failureSummary: stillFailed == 0 ? nil : outcome.failureSummary,
+                            failedPaths: []
+                        )
+                    }
+                }
+
                 if outcome.isComplete {
                     applyState = .applied
                     applyNotice = "已自动应用 \(patches.count) 个文件的改动"
@@ -530,11 +550,11 @@ final class AppEnvironment: ObservableObject {
                 } else {
                     applyState = outcome.isPartial ? .partial : .failed
                     // 用 toast 提示失败原因，不弹全局错误框打断。
-                    let reason = lastError ?? outcome.failureSummary ?? "未知错误"
-                    lastError = nil
+                    let reason = outcome.failureSummary ?? "未知错误"
                     applyNotice = reason.count > 160 ? String(reason.prefix(160)) + "…" : reason
-                    Log.warning("自动应用改动失败 \(outcome.applied)/\(patches.count)：\(reason)", .diff)
+                    Log.warning("自动应用改动失败 \(outcome.failed)/\(patches.count)：\(reason)", .diff)
                 }
+                lastError = nil
             } else {
                 Log.info("收到 AI 回复：\(reply.count) 字，没有可应用的改动", .ai)
             }
@@ -653,6 +673,7 @@ final class AppEnvironment: ObservableObject {
         let applied: Int
         let failed: Int
         let failureSummary: String?
+        let failedPaths: [String]
 
         var isComplete: Bool { failed == 0 }
         var isPartial: Bool { applied > 0 && failed > 0 }
@@ -662,6 +683,7 @@ final class AppEnvironment: ObservableObject {
     func apply(patches: [FilePatch], in repository: Repository, messageID: UUID? = nil) -> ApplyOutcome {
         var applied = 0
         var failures: [String] = []
+        var failedPaths: [String] = []
 
         for patch in patches {
             do {
@@ -686,6 +708,7 @@ final class AppEnvironment: ObservableObject {
                 Log.debug("应用文件改动：\(target.path)", .diff)
             } catch {
                 failures.append("\(patch.path)：\(error.localizedDescription)")
+                failedPaths.append(patch.path)
                 Log.error(error, .diff)
             }
         }
@@ -697,7 +720,7 @@ final class AppEnvironment: ObservableObject {
                 appliedMessageIDs.insert(messageID)
             }
             Log.info("应用改动：\(patches.count) 个文件\(messageID == nil ? "" : "（来自消息 \(messageID!.uuidString.prefix(8))）")", .diff)
-            return ApplyOutcome(applied: applied, failed: 0, failureSummary: nil)
+            return ApplyOutcome(applied: applied, failed: 0, failureSummary: nil, failedPaths: [])
         }
 
         let summary = failures.joined(separator: "；")
@@ -705,7 +728,7 @@ final class AppEnvironment: ObservableObject {
             ? "改动无法应用：\(summary)"
             : "部分改动无法应用（\(failures.count)/\(patches.count)）：\(summary)"
         Log.warning("改动应用失败 \(failures.count)/\(patches.count)：\(summary)", .diff)
-        return ApplyOutcome(applied: applied, failed: failures.count, failureSummary: summary)
+        return ApplyOutcome(applied: applied, failed: failures.count, failureSummary: summary, failedPaths: failedPaths)
     }
 
     /// 模型偶尔会把路径写错（内容其实属于另一个文件）。某个改动在声明的文件里定位不到时，
@@ -739,6 +762,81 @@ final class AppEnvironment: ObservableObject {
         corrected.newPath = path
         corrected.declaredKind = .modified
         return corrected
+    }
+
+    /// diff 无法应用时的兜底：请模型直接给出修改后的完整文件内容，覆盖写入工作区。
+    private func repairFiles(_ paths: [String], instruction: String, in repository: Repository) async -> Int {
+        guard !paths.isEmpty, let config = activeAIConfig else { return 0 }
+        let apiKey = apiKey(for: config)
+        guard !apiKey.isEmpty else { return 0 }
+
+        var repaired = 0
+        for path in paths {
+            if Task.isCancelled { break }
+
+            var existing: String?
+            do {
+                existing = try workspace.read(repository: repository, path: path)
+            } catch {
+                continue
+            }
+            guard let current = existing else { continue }
+
+            let prompt = """
+            之前针对文件 \(path) 的 unified diff 无法应用。请直接给出修改后的完整文件内容：
+            用三反引号代码块包裹整份文件，代码块内不要出现任何说明或 diff。
+            只改动与用户要求相关的部分，其余内容必须与下面给出的内容完全一致。
+
+            ===== 当前内容 \(path) =====
+            \(current)
+            ===== end \(path) =====
+
+            用户要求：
+            \(instruction)
+            """
+            let messages: [AIChatMessage] = [
+                PromptBuilder.systemMessage(config: config),
+                AIChatMessage(role: "user", content: prompt)
+            ]
+
+            do {
+                let reply = try await aiClient.complete(config: config, apiKey: apiKey, messages: messages)
+                guard let updated = Self.extractCodeBlock(from: reply), !updated.isEmpty else {
+                    Log.warning("兜底整文件重写没有拿到代码块：\(path)", .diff)
+                    continue
+                }
+                try workspace.write(repository: repository, path: path, content: updated)
+                record(
+                    repository: repository,
+                    path: path,
+                    original: current,
+                    current: updated,
+                    status: .modified
+                )
+                repaired += 1
+                Log.info("兜底整文件重写成功：\(path)", .diff)
+            } catch {
+                report(error, .diff)
+            }
+        }
+
+        if repaired > 0 { persistAll() }
+        return repaired
+    }
+
+    /// 取第一段围栏代码块的内容。
+    private static func extractCodeBlock(from text: String) -> String? {
+        let fence = "\u{0060}\u{0060}\u{0060}"
+        let lines = text.components(separatedBy: "\n")
+        guard let start = lines.firstIndex(where: { $0.hasPrefix(fence) }) else { return nil }
+        var body: [String] = []
+        var index = start + 1
+        while index < lines.count && !lines[index].hasPrefix(fence) {
+            body.append(lines[index])
+            index += 1
+        }
+        let content = body.joined(separator: "\n").trimmingCharacters(in: .newlines)
+        return content.isEmpty ? nil : content
     }
 
     /// 该消息的改动是否已经应用过。

@@ -96,7 +96,7 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 - 稳定性：请求期间用 BackgroundTask 申请后台执行时间，退到后台 / 锁屏时尽量跑完；上下文按字符预算裁剪（PromptBuilder.contextFiles，超出时优先相关文件并截断），历史只带最近 12 条；AIClient 最多重试 4 次并指数退避。
 - 界面用 agentStartedAt 实时显示已用时长（统一中文单位，如「45秒」「1分23秒」），回复气泡展示最终用时。
 - 取消类错误（URLError.cancelled / CancellationError）统一由 Support/Cancellation.swift 识别，只记调试日志，不弹错。
-- 改动页用 LineDiff + DiffView 以 GitHub 风格展示：旧/新行号 + 增删颜色 + 统计条；PatchApplier 在行号不准时按内容模糊定位，整文件重写则直接采用新内容；若声明的文件里定位不到，AppEnvironment.resolvedPatch 会在工作区中寻找唯一匹配的文件来纠正路径。
+- 改动页用 LineDiff + DiffView 以 GitHub 风格展示：旧/新行号 + 增删颜色 + 统计条；PatchApplier 逐级放宽定位：精确行号 → 全文件内容搜索 → 忽略首尾空白 → fuzz（保留删除行、丢弃首尾上下文）→ 已是改动后状态则跳过 → 整文件重写；若声明的文件里定位不到，AppEnvironment.resolvedPatch 会在工作区中寻找唯一匹配的文件来纠正路径；仍无法应用的，performSend 会再请模型直接返回完整文件内容作为兜底。
 
 ## 4. 并发约定
 
