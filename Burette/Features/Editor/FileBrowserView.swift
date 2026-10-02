@@ -13,7 +13,9 @@ struct FileBrowserView: View {
                 Label(node.name, systemImage: "folder")
                     .foregroundStyle(.primary)
             } else {
-                NavigationLink(value: node) {
+                NavigationLink {
+                    EditorView(repository: repository, path: node.path)
+                } label: {
                     Label(node.name, systemImage: "doc.text")
                         .foregroundStyle(.primary)
                 }
@@ -21,9 +23,7 @@ struct FileBrowserView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle(repository.name)
-        .navigationDestination(for: FileNode.self) { node in
-            EditorView(repository: repository, path: node.path)
-        }
+        .navigationBarTitleDisplayMode(.inline)
         .overlay {
             if isLoaded && nodes.isEmpty {
                 ContentUnavailableView(

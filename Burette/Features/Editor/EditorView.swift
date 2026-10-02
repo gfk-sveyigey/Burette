@@ -11,7 +11,7 @@ struct EditorView: View {
 
     @State private var text = ""
     @State private var isLoaded = false
-    @State private var isMissing = false
+    @State private var loadError: String?
 
     private var fileName: String {
         path.split(separator: "/").last.map { String($0) } ?? path
@@ -28,8 +28,8 @@ struct EditorView: View {
             .overlay(alignment: .topLeading) {
                 if !isLoaded {
                     ProgressView().padding()
-                } else if isMissing {
-                    Text("这个文件在本地工作区里不存在，或不是 UTF-8 文本。")
+                } else if let loadError {
+                    Text(loadError)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .padding()
@@ -42,25 +42,24 @@ struct EditorView: View {
                     Button("保存") {
                         env.saveEditedFile(repository, path: path, content: text)
                     }
-                    .disabled(isMissing)
+                    .disabled(loadError != nil)
                 }
             }
             .task(id: path) { load() }
     }
 
     private func load() {
-        guard !isLoaded else { return }
         do {
             if let content = try env.workspace.read(repository: repository, path: path) {
                 text = content
-                isMissing = false
+                loadError = nil
             } else {
                 text = ""
-                isMissing = true
+                loadError = "这个文件在本地工作区里不存在，先回到「仓库」页拉取一次。"
             }
         } catch {
             text = ""
-            isMissing = true
+            loadError = error.localizedDescription
         }
         isLoaded = true
     }

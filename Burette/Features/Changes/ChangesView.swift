@@ -17,6 +17,7 @@ struct ChangesView: View {
             }
         }
         .navigationTitle("改动")
+        .navigationBarTitleDisplayMode(.inline)
     }
 
     @ViewBuilder
@@ -49,9 +50,7 @@ struct ChangesView: View {
                     Button("查看") { preview = change }
                         .buttonStyle(.borderless)
                 }
-                .swipeActions {
-                    Button("丢弃", role: .destructive) { env.discard(change: change, in: repository) }
-                }
+                .circularDeleteSwipe { env.discard(change: change, in: repository) }
             }
 
             Section {

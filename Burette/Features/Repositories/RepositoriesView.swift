@@ -3,10 +3,15 @@ import SwiftUI
 struct RepositoriesView: View {
     @EnvironmentObject private var env: AppEnvironment
     @State private var showingPicker = false
-    @State private var openedRepository: Repository?
+    @State private var selection = Set<UUID>()
+    @State private var editMode: EditMode = .inactive
+
+    private var selectedRepositories: [Repository] {
+        env.repositories.filter { selection.contains($0.id) }
+    }
 
     var body: some View {
-        List {
+        List(selection: $selection) {
             if env.repositories.isEmpty {
                 ContentUnavailableView(
                     "还没有仓库",
@@ -16,16 +21,11 @@ struct RepositoriesView: View {
             }
 
             ForEach(env.repositories) { repository in
-                Button {
-                    env.selectedRepositoryID = repository.id
+                NavigationLink {
+                    FileBrowserView(repository: repository)
                 } label: {
-                    RepositoryRow(
-                        repository: repository,
-                        isSelected: repository.id == env.selectedRepositoryID
-                    )
+                    RepositoryRow(repository: repository)
                 }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
                 .task { await env.loadBranches(for: repository) }
                 .contextMenu {
                     Button {
@@ -49,32 +49,44 @@ struct RepositoriesView: View {
                     } label: {
                         Label("切换分支", systemImage: "arrow.triangle.branch")
                     }
-
-                    Button {
-                        openedRepository = repository
-                    } label: {
-                        Label("打开文件", systemImage: "folder")
-                    }
                 }
-                .swipeActions(edge: .trailing) {
-                    Button("删除", role: .destructive) { env.removeRepository(repository) }
-                }
+                .circularDeleteSwipe { env.removeRepository(repository) }
             }
         }
         .listStyle(.insetGrouped)
+        .environment(\.editMode, $editMode)
         .navigationTitle("仓库")
-        .navigationDestination(item: $openedRepository) { repository in
-            FileBrowserView(repository: repository)
-        }
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button("退出") { env.signOut() }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showingPicker = true
-                } label: {
-                    Image(systemName: "plus")
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if editMode == .active {
+                    Menu {
+                        Button {
+                            pullSelected()
+                        } label: {
+                            Label("拉取选中", systemImage: "arrow.down.circle")
+                        }
+                        Button(role: .destructive) {
+                            deleteSelected()
+                        } label: {
+                            Label("删除选中", systemImage: "trash")
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .disabled(selection.isEmpty)
+
+                    Button("完成") { exitSelection() }
+                } else {
+                    Button {
+                        showingPicker = true
+                    } label: {
+                        Image(systemName: "plus")
+                    }
+                    Button("选择") {
+                        selection = []
+                        editMode = .active
+                    }
                 }
             }
         }
@@ -82,11 +94,33 @@ struct RepositoriesView: View {
             RepositoryPickerView()
         }
     }
+
+    private func exitSelection() {
+        selection = []
+        editMode = .inactive
+    }
+
+    private func pullSelected() {
+        let repositories = selectedRepositories
+        guard !repositories.isEmpty else { return }
+        exitSelection()
+        Task {
+            for repository in repositories {
+                await env.clone(repository)
+            }
+        }
+    }
+
+    private func deleteSelected() {
+        for repository in selectedRepositories {
+            env.removeRepository(repository)
+        }
+        exitSelection()
+    }
 }
 
 struct RepositoryRow: View {
     let repository: Repository
-    let isSelected: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -98,11 +132,6 @@ struct RepositoryRow: View {
                     Image(systemName: "lock.fill")
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                }
-                Spacer()
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.tint)
                 }
             }
 
@@ -182,6 +211,7 @@ struct RepositoryPickerView: View {
             }
             .searchable(text: $query, prompt: "搜索仓库")
             .navigationTitle("选择仓库")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
