@@ -17,6 +17,8 @@ final class AppEnvironment: ObservableObject {
     @Published var messagesByRepository: [UUID: [ChatMessage]] = [:]
     @Published var changesByRepository: [UUID: [FileChange]] = [:]
     @Published var branchesByRepository: [UUID: [String]] = [:]
+    @Published var appliedMessageIDs: Set<UUID> = []
+    @Published var tokenScopes: [String] = []
 
     @Published var currentUser: GitHubUser?
     @Published var isAuthenticated = false
@@ -89,7 +91,8 @@ final class AppEnvironment: ObservableObject {
                 await github.updateToken(token)
                 isAuthenticated = true
                 currentUser = try? await github.currentUser()
-                Log.info("已恢复登录：\(currentUser?.login ?? "未知账户")", .app)
+                tokenScopes = await github.currentScopes()
+                Log.info("已恢复登录：\(currentUser?.login ?? "未知账户")，令牌权限：\(tokenScopes.isEmpty ? "未知" : tokenScopes.joined(separator: ", "))", .app)
             } else {
                 Log.info("未找到已保存的登录凭据", .app)
             }
@@ -104,6 +107,7 @@ final class AppEnvironment: ObservableObject {
             aiConfigs = try store.load([AIProviderConfig].self, from: "ai-configs") ?? []
             messagesByRepository = try store.load([UUID: [ChatMessage]].self, from: "messages") ?? [:]
             changesByRepository = try store.load([UUID: [FileChange]].self, from: "changes") ?? [:]
+            appliedMessageIDs = Set(try store.load([UUID].self, from: "applied-messages") ?? [])
             selectedRepositoryID = repositories.first?.id
             selectedAIConfigID = aiConfigs.first?.id
         } catch {
@@ -117,6 +121,7 @@ final class AppEnvironment: ObservableObject {
             try store.save(aiConfigs, to: "ai-configs")
             try store.save(messagesByRepository, to: "messages")
             try store.save(changesByRepository, to: "changes")
+            try store.save(Array(appliedMessageIDs), to: "applied-messages")
         } catch {
             lastError = error.localizedDescription
         }
@@ -130,10 +135,11 @@ final class AppEnvironment: ObservableObject {
         await github.updateToken(trimmed)
         do {
             currentUser = try await github.currentUser()
+            tokenScopes = await github.currentScopes()
             try keychain.set(trimmed, for: KeychainStore.gitHubTokenKey)
             isAuthenticated = true
             lastError = nil
-            Log.info("登录成功：\(currentUser?.login ?? "未知账户")", .app)
+            Log.info("登录成功：\(currentUser?.login ?? "未知账户")，令牌权限：\(tokenScopes.isEmpty ? "未知" : tokenScopes.joined(separator: ", "))", .app)
         } catch {
             await github.updateToken(nil)
             lastError = error.localizedDescription
@@ -146,8 +152,10 @@ final class AppEnvironment: ObservableObject {
         Task { await github.updateToken(nil) }
         isAuthenticated = false
         currentUser = nil
+        tokenScopes = []
         repositories = []
         selectedRepositoryID = nil
+        appliedMessageIDs = []
         persistAll()
         Log.info("已退出登录", .app)
     }
@@ -182,9 +190,10 @@ final class AppEnvironment: ObservableObject {
 
             try keychain.set(trimmed, for: KeychainStore.gitHubTokenKey)
             currentUser = user
+            tokenScopes = await github.currentScopes()
             isAuthenticated = true
             lastError = nil
-            Log.info("账户凭据已更新：\(user.login)", .app)
+            Log.info("账户凭据已更新：\(user.login)，令牌权限：\(tokenScopes.isEmpty ? "未知" : tokenScopes.joined(separator: ", "))", .app)
 
             if allowSwitch, let previousLogin, previousLogin != user.login {
                 repositories = []
@@ -303,9 +312,10 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
-    /// 刷新当前登录的 GitHub 账户信息。
+    /// 刷新当前登录的 GitHub 账户信息与令牌权限。
     func refreshCurrentUser() async {
         currentUser = try? await github.currentUser()
+        tokenScopes = await github.currentScopes()
     }
 
     // MARK: - 对话
@@ -349,6 +359,9 @@ final class AppEnvironment: ObservableObject {
                 return FileContext(path: path, content: content)
             }
         }
+
+        let contextChars = files.reduce(0) { $0 + $1.content.count }
+        Log.debug("上下文：文件树 \(tree.count) 项，参考文件 \(files.count) 个，共 \(contextChars) 字", .ai)
 
         var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
         apiMessages.append(PromptBuilder.contextMessage(fileTree: tree, files: files))
@@ -431,7 +444,8 @@ final class AppEnvironment: ObservableObject {
 
     // MARK: - 改动
 
-    func apply(patches: [FilePatch], in repository: Repository) {
+    @discardableResult
+    func apply(patches: [FilePatch], in repository: Repository, messageID: UUID? = nil) -> Bool {
         do {
             for patch in patches {
                 let original = try workspace.read(repository: repository, path: patch.path)
@@ -451,12 +465,22 @@ final class AppEnvironment: ObservableObject {
                     status: status(for: patch.kind, original: original)
                 )
             }
+            if let messageID {
+                appliedMessageIDs.insert(messageID)
+            }
             persistAll()
-            Log.info("应用改动：\(patches.count) 个文件", .diff)
+            Log.info("应用改动：\(patches.count) 个文件\(messageID == nil ? "" : "（来自消息 \(messageID!.uuidString.prefix(8))）")", .diff)
+            return true
         } catch {
             lastError = error.localizedDescription
             Log.error(error, .diff)
+            return false
         }
+    }
+
+    /// 该消息的改动是否已经应用过。
+    func isApplied(_ message: ChatMessage) -> Bool {
+        appliedMessageIDs.contains(message.id)
     }
 
     func saveEditedFile(_ repository: Repository, path: String, content: String) {

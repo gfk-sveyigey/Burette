@@ -37,6 +37,18 @@ enum LogCategory: String, CaseIterable, Hashable {
     case workspace
     case diff
     case persistence
+
+    var label: String {
+        switch self {
+        case .app: return "应用"
+        case .ui: return "界面"
+        case .github: return "GitHub"
+        case .ai: return "AI"
+        case .workspace: return "工作区"
+        case .diff: return "Diff"
+        case .persistence: return "存储"
+        }
+    }
 }
 
 /// 一条日志。

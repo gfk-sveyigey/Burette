@@ -4,6 +4,7 @@ struct ChangesView: View {
     @EnvironmentObject private var env: AppEnvironment
     @State private var commitMessage = ""
     @State private var preview: FileChange?
+    @FocusState private var isEditingMessage: Bool
 
     var body: some View {
         Group {
@@ -31,39 +32,27 @@ struct ChangesView: View {
             }
 
             ForEach(changes) { change in
-                HStack(spacing: 12) {
-                    Toggle("", isOn: Binding(
-                        get: { change.isStaged },
-                        set: { env.setStaged($0, for: change, in: repository) }
-                    ))
-                    .labelsHidden()
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(change.path).font(.callout.monospaced())
-                        Text(statusText(change.status))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Spacer()
-
-                    Button("查看") { preview = change }
-                        .buttonStyle(.borderless)
-                }
-                .circularDeleteSwipe { env.discard(change: change, in: repository) }
+                row(change, in: repository)
+                    .circularDeleteSwipe { env.discard(change: change, in: repository) }
             }
 
             Section {
                 TextField("提交说明", text: $commitMessage, axis: .vertical)
                     .lineLimit(1...4)
+                    .focused($isEditingMessage)
                 Button("提交并推送") {
                     let message = commitMessage
                     commitMessage = ""
+                    isEditingMessage = false
                     Task { await env.commitStaged(in: repository, message: message) }
                 }
                 .disabled(commitMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
+        .scrollDismissesKeyboard(.interactively)
+        .simultaneousGesture(
+            TapGesture().onEnded { isEditingMessage = false }
+        )
         .sheet(item: $preview) { change in
             NavigationStack {
                 ScrollView {
@@ -73,8 +62,43 @@ struct ChangesView: View {
                         .padding()
                 }
                 .navigationTitle(change.path)
+                .navigationBarTitleDisplayMode(.inline)
             }
         }
+    }
+
+    private func row(_ change: FileChange, in repository: Repository) -> some View {
+        HStack(spacing: 10) {
+            Button {
+                env.setStaged(!change.isStaged, for: change, in: repository)
+            } label: {
+                Image(systemName: change.isStaged ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(change.isStaged ? Color.accentColor : Color.secondary)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(change.isStaged ? "取消暂存" : "暂存")
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(change.path)
+                    .font(.callout.monospaced())
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(statusText(change.status) + (change.isStaged ? " · 已暂存" : " · 未暂存"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { preview = change }
     }
 
     private func statusText(_ status: FileChange.Status) -> String {

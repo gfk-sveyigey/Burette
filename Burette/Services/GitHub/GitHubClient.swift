@@ -6,6 +6,7 @@ enum GitHubError: Error, LocalizedError {
     case unauthorized
     case notFound
     case rateLimited
+    case insufficientScope(String)
     case http(status: Int, message: String)
     case decoding(String)
 
@@ -21,6 +22,14 @@ enum GitHubError: Error, LocalizedError {
             return "GitHub 资源不存在（404）。"
         case .rateLimited:
             return "GitHub 请求达到频率限制，请稍后再试。"
+        case .insufficientScope(let detail):
+            return """
+            GitHub 拒绝了这次操作，通常是令牌权限不足。
+            请确认 PAT 权限：
+            · 经典令牌：勾选 repo（完整仓库读写；私有仓库必需）
+            · 细粒度令牌：Contents 设为 Read and write，并勾选 Metadata: Read
+            \(detail.isEmpty ? "" : "详情：" + detail)
+            """
         case .http(let status, let message):
             return "GitHub 返回错误（HTTP \(status)）：\(message)"
         case .decoding(let message):
@@ -35,6 +44,7 @@ actor GitHubClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private var token: String?
+    private var scopes: Set<String> = []
 
     init(
         baseURL: URL = URL(string: "https://api.github.com")!,
@@ -49,6 +59,11 @@ actor GitHubClient {
 
     func updateToken(_ token: String?) {
         self.token = token
+    }
+
+    /// 最近一次响应头里带回的令牌权限（X-OAuth-Scopes）。
+    func currentScopes() -> [String] {
+        scopes.sorted()
     }
 
     // MARK: - 账户与仓库
@@ -216,35 +231,55 @@ actor GitHubClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         }
 
-        Log.debug("GitHub \(method) \(path)", .github)
+        Log.debug("GitHub → \(method) \(path)（请求体 \(body?.count ?? 0) 字节）", .github)
+        let startedAt = Date()
 
-        let (data, response) = try await session.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            Log.error("GitHub \(method) \(path) 网络失败：\(error.localizedDescription)", .github)
+            throw error
+        }
+
         guard let http = response as? HTTPURLResponse else {
             Log.error("GitHub \(method) \(path) 返回了无效响应", .github)
             throw GitHubError.http(status: -1, message: "无效的服务器响应。")
         }
 
+        if let scopeHeader = http.value(forHTTPHeaderField: "X-OAuth-Scopes") {
+            scopes = Set(
+                scopeHeader
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+            )
+        }
+
+        let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)
+        let bodyPreview = String(data: data, encoding: .utf8).map { String($0.prefix(300)) } ?? ""
+
         switch http.statusCode {
         case 200..<300:
-            Log.debug("GitHub \(method) \(path) → \(http.statusCode)", .github)
+            Log.debug("GitHub ← \(http.statusCode) \(method) \(path)（\(data.count) 字节，\(elapsed) ms）", .github)
             return data
         case 401:
-            Log.error("GitHub \(method) \(path) → 401 未授权", .github)
+            Log.error("GitHub ← 401 \(method) \(path)（\(elapsed) ms）", .github)
             throw GitHubError.unauthorized
         case 403:
             if http.value(forHTTPHeaderField: "X-RateLimit-Remaining") == "0" {
-                Log.error("GitHub \(method) \(path) → 403 频率限制", .github)
+                Log.error("GitHub ← 403 频率限制 \(method) \(path)（\(elapsed) ms）", .github)
                 throw GitHubError.rateLimited
             }
-            Log.error("GitHub \(method) \(path) → 403 拒绝访问", .github)
-            throw GitHubError.unauthorized
+            Log.error("GitHub ← 403 权限不足 \(method) \(path)（\(elapsed) ms）：\(bodyPreview)", .github)
+            throw GitHubError.insufficientScope(bodyPreview)
         case 404:
-            Log.error("GitHub \(method) \(path) → 404 不存在", .github)
+            Log.error("GitHub ← 404 \(method) \(path)（\(elapsed) ms）：\(bodyPreview)", .github)
             throw GitHubError.notFound
         default:
-            let message = String(data: data, encoding: .utf8) ?? ""
-            Log.error("GitHub \(method) \(path) → \(http.statusCode)", .github)
-            throw GitHubError.http(status: http.statusCode, message: message)
+            Log.error("GitHub ← \(http.statusCode) \(method) \(path)（\(elapsed) ms）：\(bodyPreview)", .github)
+            throw GitHubError.http(status: http.statusCode, message: bodyPreview)
         }
     }
 }
