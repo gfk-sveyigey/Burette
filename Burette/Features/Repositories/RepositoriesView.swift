@@ -3,6 +3,7 @@ import SwiftUI
 struct RepositoriesView: View {
     @EnvironmentObject private var env: AppEnvironment
     @State private var showingPicker = false
+    @State private var openedRepository: Repository?
 
     var body: some View {
         List {
@@ -15,34 +16,56 @@ struct RepositoriesView: View {
             }
 
             ForEach(env.repositories) { repository in
-                HStack {
+                Button {
+                    env.selectedRepositoryID = repository.id
+                } label: {
+                    RepositoryRow(
+                        repository: repository,
+                        isSelected: repository.id == env.selectedRepositoryID
+                    )
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .task { await env.loadBranches(for: repository) }
+                .contextMenu {
                     Button {
-                        env.selectedRepositoryID = repository.id
+                        Task { await env.clone(repository) }
                     } label: {
-                        RepositoryRow(
-                            repository: repository,
-                            isSelected: repository.id == env.selectedRepositoryID
-                        )
+                        Label("拉取", systemImage: "arrow.down.circle")
                     }
-                    .buttonStyle(.plain)
 
-                    Spacer()
-
-                    NavigationLink {
-                        FileBrowserView(repository: repository)
+                    Menu {
+                        ForEach(env.branches(for: repository), id: \.self) { branch in
+                            Button {
+                                Task { await env.switchBranch(repository, to: branch) }
+                            } label: {
+                                if branch == repository.currentBranch {
+                                    Label(branch, systemImage: "checkmark")
+                                } else {
+                                    Text(branch)
+                                }
+                            }
+                        }
                     } label: {
-                        Image(systemName: "folder")
+                        Label("切换分支", systemImage: "arrow.triangle.branch")
                     }
-                    .buttonStyle(.borderless)
+
+                    Button {
+                        openedRepository = repository
+                    } label: {
+                        Label("打开文件", systemImage: "folder")
+                    }
                 }
                 .swipeActions(edge: .trailing) {
                     Button("删除", role: .destructive) { env.removeRepository(repository) }
-                    Button("拉取") { Task { await env.clone(repository) } }
-                        .tint(.blue)
                 }
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("仓库")
+        .navigationDestination(item: $openedRepository) { repository in
+            FileBrowserView(repository: repository)
+        }
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button("退出") { env.signOut() }
@@ -68,17 +91,30 @@ struct RepositoryRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
-                }
-                Text(repository.fullName).font(.headline)
+                Text(repository.fullName)
+                    .font(.headline)
+                    .foregroundStyle(.primary)
                 if repository.isPrivate {
-                    Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary)
+                    Image(systemName: "lock.fill")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundStyle(.tint)
                 }
             }
-            Text("分支 \(repository.currentBranch)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.caption2)
+                Text(repository.currentBranch)
+                    .font(.caption)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.secondary)
+
             if let sha = repository.baseCommitSHA {
                 Text("base \(sha.prefix(7))")
                     .font(.caption2.monospaced())
@@ -100,6 +136,13 @@ struct RepositoryPickerView: View {
     @State private var repositories: [GitHubRepository] = []
     @State private var isLoading = true
     @State private var errorMessage: String?
+    @State private var query = ""
+
+    private var filtered: [GitHubRepository] {
+        let keyword = query.trimmingCharacters(in: .whitespaces)
+        guard !keyword.isEmpty else { return repositories }
+        return repositories.filter { $0.fullName.localizedCaseInsensitiveContains(keyword) }
+    }
 
     var body: some View {
         NavigationStack {
@@ -108,27 +151,36 @@ struct RepositoryPickerView: View {
                     HStack { Spacer(); ProgressView(); Spacer() }
                 } else if let errorMessage {
                     Text(errorMessage).foregroundStyle(.red)
+                } else if filtered.isEmpty && !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    ContentUnavailableView.search(text: query)
                 }
-                ForEach(repositories, id: \.id) { repo in
+
+                ForEach(filtered, id: \.id) { repo in
                     Button {
                         env.addRepositories(from: [repo])
                         dismiss()
                     } label: {
-                        HStack {
+                        HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(repo.fullName)
+                                    .foregroundStyle(.primary)
                                 Text(repo.isPrivate ? "私有" : "公开")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
-                            if env.repositories.contains(where: { $0.owner == repo.owner.login && $0.name == repo.name }) {
-                                Image(systemName: "checkmark").foregroundStyle(.secondary)
+                            if isAdded(repo) {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.secondary)
                             }
                         }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
+                    .disabled(isAdded(repo))
                 }
             }
+            .searchable(text: $query, prompt: "搜索仓库")
             .navigationTitle("选择仓库")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -137,6 +189,10 @@ struct RepositoryPickerView: View {
             }
             .task { await load() }
         }
+    }
+
+    private func isAdded(_ repo: GitHubRepository) -> Bool {
+        env.repositories.contains { $0.owner == repo.owner.login && $0.name == repo.name }
     }
 
     private func load() async {

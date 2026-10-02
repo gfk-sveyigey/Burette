@@ -2,7 +2,11 @@ import SwiftUI
 
 struct ChatView: View {
     @EnvironmentObject private var env: AppEnvironment
+
     @State private var input = ""
+    @State private var contextPaths: [String] = []
+    @State private var showingContextPicker = false
+    @FocusState private var isInputFocused: Bool
 
     var body: some View {
         Group {
@@ -12,12 +16,29 @@ struct ChatView: View {
                 ContentUnavailableView(
                     "请先选择仓库",
                     systemImage: "square.stack.3d.up",
-                    description: Text("在「仓库」里添加并选中一个仓库。")
+                    description: Text("点右上角切换仓库，或去「仓库」页添加。")
                 )
             }
         }
-        .navigationTitle("对话")
+        .navigationTitle(env.selectedRepository?.name ?? "对话")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                RepositoryMenuButton()
+            }
+            ToolbarItemGroup(placement: .keyboard) {
+                Spacer()
+                Button("完成") { isInputFocused = false }
+            }
+        }
+        .sheet(isPresented: $showingContextPicker) {
+            if let repository = env.selectedRepository {
+                ContextPickerView(repository: repository, selected: $contextPaths)
+            }
+        }
     }
+
+    // MARK: - Content
 
     @ViewBuilder
     private func content(for repository: Repository) -> some View {
@@ -27,50 +48,194 @@ struct ChatView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
-                        if messages.isEmpty {
-                            Text("描述你想怎么改这个仓库，AI 会返回 unified diff 供你预览和应用。")
+                        if messages.isEmpty && !env.isSending {
+                            Text("描述你想怎么改，AI 会返回 unified diff 供你预览和应用。\n\n点左下角回形针可以指定要参考的文件。")
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .center)
-                                .padding(.top, 40)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 48)
                         }
+
                         ForEach(messages) { message in
                             MessageBubble(message: message) { patches in
                                 env.apply(patches: patches, in: repository)
                             }
                             .id(message.id)
                         }
+
+                        if env.isSending {
+                            ThinkingBubble()
+                                .id(Self.thinkingID)
+                        }
                     }
-                    .padding()
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                 }
+                .scrollDismissesKeyboard(.interactively)
                 .onChange(of: messages.count) { _, _ in
-                    if let last = messages.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
-                    }
+                    scrollToBottom(proxy, messages: messages)
+                }
+                .onChange(of: env.isSending) { _, _ in
+                    scrollToBottom(proxy, messages: messages)
                 }
             }
 
             Divider()
+            inputBar(for: repository)
+        }
+    }
 
-            HStack(spacing: 8) {
+    private static let thinkingID = "thinking-indicator"
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy, messages: [ChatMessage]) {
+        withAnimation(.easeOut(duration: 0.2)) {
+            if env.isSending {
+                proxy.scrollTo(Self.thinkingID, anchor: .bottom)
+            } else if let last = messages.last {
+                proxy.scrollTo(last.id, anchor: .bottom)
+            }
+        }
+    }
+
+    private var canSend: Bool {
+        !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !env.isSending
+    }
+
+    @ViewBuilder
+    private func inputBar(for repository: Repository) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if !contextPaths.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(contextPaths, id: \.self) { path in
+                            ContextChip(path: path) {
+                                contextPaths.removeAll { $0 == path }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                Button {
+                    isInputFocused = false
+                    showingContextPicker = true
+                } label: {
+                    Image(systemName: "paperclip")
+                        .font(.title3)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .liquidGlassCapsule()
+                .accessibilityLabel("引用文件")
+
                 TextField("描述你想怎么改…", text: $input, axis: .vertical)
                     .lineLimit(1...5)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .focused($isInputFocused)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .liquidGlass(cornerRadius: 20)
 
                 Button {
-                    let text = input
-                    input = ""
-                    Task { await env.send(text, in: repository) }
+                    send(in: repository)
                 } label: {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.title2)
+                    Image(systemName: "arrow.up")
+                        .font(.headline)
+                        .frame(width: 42, height: 42)
+                        .contentShape(Circle())
                 }
-                .disabled(
-                    input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || env.isSending
-                )
+                .buttonStyle(.plain)
+                .liquidGlassCapsule(tint: .accentColor, interactive: true)
+                .opacity(canSend ? 1 : 0.5)
+                .disabled(!canSend)
+                .accessibilityLabel("发送")
             }
-            .padding()
         }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.bar)
+    }
+
+    private func send(in repository: Repository) {
+        let text = input
+        let paths = contextPaths
+        input = ""
+        contextPaths = []
+        isInputFocused = false
+        Task { await env.send(text, in: repository, contextPaths: paths) }
+    }
+}
+
+// MARK: - Repository switching
+
+struct RepositoryMenuButton: View {
+    @EnvironmentObject private var env: AppEnvironment
+
+    var body: some View {
+        Menu {
+            if env.repositories.isEmpty {
+                Text("还没有仓库")
+            } else {
+                ForEach(env.repositories) { repository in
+                    Button {
+                        env.selectedRepositoryID = repository.id
+                    } label: {
+                        if repository.id == env.selectedRepositoryID {
+                            Label(repository.fullName, systemImage: "checkmark")
+                        } else {
+                            Text(repository.fullName)
+                        }
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: "square.stack.3d.up")
+        }
+        .accessibilityLabel("切换仓库")
+    }
+}
+
+// MARK: - Bubbles
+
+struct ThinkingBubble: View {
+    var body: some View {
+        HStack(spacing: 10) {
+            ProgressView()
+            Text("AI 正在思考…")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .liquidGlass(cornerRadius: 14)
+    }
+}
+
+struct ContextChip: View {
+    let path: String
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: "doc.text")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(path)
+                .font(.caption2)
+                .lineLimit(1)
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 5)
+        .liquidGlass(cornerRadius: 10)
     }
 }
 
@@ -84,7 +249,7 @@ struct MessageBubble: View {
                 .font(.callout)
                 .textSelection(.enabled)
                 .padding(12)
-                .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 14))
+                .background(bubbleBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
 
             if let patches = message.patches, !patches.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -107,7 +272,7 @@ struct MessageBubble: View {
                         .controlSize(.small)
                 }
                 .padding(10)
-                .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                .liquidGlass(cornerRadius: 12)
             }
         }
         .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
