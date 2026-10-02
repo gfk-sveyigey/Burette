@@ -17,6 +17,7 @@ final class AppEnvironment: ObservableObject {
     @Published var messagesByRepository: [UUID: [ChatMessage]] = [:]
     @Published var changesByRepository: [UUID: [FileChange]] = [:]
     @Published var branchesByRepository: [UUID: [String]] = [:]
+    @Published var remoteUpdates: [UUID: Bool] = [:]
     @Published var appliedMessageIDs: Set<UUID> = []
     @Published var tokenScopes: [String] = []
 
@@ -243,6 +244,7 @@ final class AppEnvironment: ObservableObject {
         changesByRepository[repository.id] = nil
         messagesByRepository[repository.id] = nil
         branchesByRepository[repository.id] = nil
+        remoteUpdates[repository.id] = nil
         if selectedRepositoryID == repository.id { selectedRepositoryID = repositories.first?.id }
         let folder = workspace.folder(for: repository)
         try? FileManager.default.removeItem(at: folder)
@@ -260,6 +262,7 @@ final class AppEnvironment: ObservableObject {
                 repositories[index].baseCommitSHA = result.sha
                 repositories[index].lastSyncedAt = Date()
             }
+            remoteUpdates[repository.id] = false
             persistAll()
             Log.info("拉取完成：\(repository.fullName)，\(result.fileCount) 个文件，base \(result.sha.prefix(7))", .workspace)
         } catch {
@@ -416,6 +419,33 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// 依次检查所有仓库的远端是否有新提交。
+    func checkForUpdates() async {
+        for repository in repositories {
+            await checkForUpdates(for: repository)
+        }
+    }
+
+    /// 检查单个仓库的远端分支是否领先本地 base commit。
+    func checkForUpdates(for repository: Repository) async {
+        do {
+            let ref = try await github.ref(
+                owner: repository.owner,
+                repo: repository.name,
+                branch: repository.currentBranch
+            )
+            let remote = ref.object.sha
+            let outdated = repository.baseCommitSHA != nil && repository.baseCommitSHA != remote
+            remoteUpdates[repository.id] = outdated
+            Log.debug(
+                "远端检查：\(repository.fullName)＠\(repository.currentBranch) → \(remote.prefix(7))，本地 base \(repository.baseCommitSHA?.prefix(7) ?? "无")",
+                .github
+            )
+        } catch {
+            Log.warning("远端检查失败：\(repository.fullName)：\(error.localizedDescription)", .github)
+        }
+    }
+
     /// 切换分支：更新元数据后按新分支重新拉取工作区。
     /// 切换会丢弃当前未提交的改动（旧 base 已失效）。
     func switchBranch(_ repository: Repository, to branch: String) async {
@@ -525,16 +555,23 @@ final class AppEnvironment: ObservableObject {
         persistAll()
     }
 
-    func commitStaged(in repository: Repository, message: String) async {
+    @discardableResult
+    func commitStaged(in repository: Repository, message: String) async -> Bool {
+        let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            lastError = "请先填写提交说明。"
+            return false
+        }
         let staged = pendingChanges(for: repository).filter { $0.isStaged }
         guard !staged.isEmpty else {
             lastError = "请先勾选要提交的文件。"
-            return
+            return false
         }
         busyMessage = "正在提交并推送…"
         defer { busyMessage = nil }
+        Log.info("开始提交：\(repository.fullName)＠\(repository.currentBranch)，\(staged.count) 个文件", .github)
         do {
-            let sha = try await gitData.commit(repository: repository, changes: staged, message: message)
+            let sha = try await gitData.commit(repository: repository, changes: staged, message: trimmed)
             if let index = repositories.firstIndex(where: { $0.id == repository.id }) {
                 repositories[index].baseCommitSHA = sha
                 repositories[index].lastSyncedAt = Date()
@@ -544,9 +581,11 @@ final class AppEnvironment: ObservableObject {
             changesByRepository[repository.id] = remaining
             persistAll()
             Log.info("提交并推送成功：\(staged.count) 个文件，新 commit \(sha.prefix(7))", .github)
+            return true
         } catch {
             lastError = error.localizedDescription
             Log.error(error, .github)
+            return false
         }
     }
 
