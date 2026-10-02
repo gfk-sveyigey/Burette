@@ -34,7 +34,7 @@
 | `Services/GitHub/` | REST 客户端与 Git Data API 提交流程 |
 | `Services/Workspace/` | 本地工作区读写、仓库与配置持久化 |
 | `Features/` | 按功能划分的界面：Auth / Repositories / Chat / Changes / Editor / Settings |
-| `Support/` | 通用视图与工具：Liquid Glass 封装、文件路径树（`FileNode`）、日志（`Log` / `LogCenter`） |
+| `Support/` | 通用视图与工具：Liquid Glass 封装、文件路径树（`FileNode`）、日志（`Log` / `LogCenter` / `CrashReporter`） |
 
 ## 3. 关键设计
 
@@ -78,7 +78,10 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 
 - OSLog（可在 Console.app 按子系统 `com.burette.app` 过滤）
 - 内存环形缓冲（最近 800 条，设置页「运行日志」可实时查看、按级别筛选、导出）
-- 应用支持目录 `Burette/Logs/burette.log`（超过 1 MB 轮转为 `burette.1.log`）
+- 沙盒 `Documents/Logs/burette.log`（超过 1 MB 轮转为 `burette.1.log`），可在「运行日志」里导出
+
+`CrashReporter` 把 stderr 重定向到 `Documents/Logs/stderr.log`，并安装未捕获异常与致命信号处理；
+下次启动时崩溃信息会并入主日志，并在「运行日志」里标注为「上一次会话的崩溃 / 错误输出」。
 
 日志中不会写入 Token / API Key 等明文密钥。
 

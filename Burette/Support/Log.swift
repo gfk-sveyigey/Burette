@@ -63,7 +63,8 @@ struct LogEntry: Identifiable, Hashable {
 /// 内存 + 文件的日志中心。
 ///
 /// - 内存里保留最近 limit 条，供 App 内「运行日志」页展示。
-/// - 同时追加写入应用支持目录下的 burette.log，超过上限后轮转为 burette.1.log。
+/// - 同时追加写入 Documents/Logs/burette.log，超过上限后轮转为 burette.1.log。
+/// - 启动时会把上一会话的崩溃输出合并进来，并加载最近历史，方便定位闪退。
 final class LogCenter: ObservableObject, @unchecked Sendable {
     static let shared = LogCenter()
 
@@ -74,20 +75,21 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
     private let limit = 800
 
     private let fileQueue = DispatchQueue(label: "com.burette.log.file")
-    private let fileURL: URL
+    let fileURL: URL
+    let stderrURL: URL
     private let maxFileSize = 1_024_000
 
     private init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        let directory = base
-            .appendingPathComponent("Burette", isDirectory: true)
-            .appendingPathComponent("Logs", isDirectory: true)
+        let directory = base.appendingPathComponent("Logs", isDirectory: true)
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         fileURL = directory.appendingPathComponent("burette.log")
-    }
+        stderrURL = directory.appendingPathComponent("stderr.log")
 
-    var logFileURL: URL { fileURL }
+        mergePreviousCrash()
+        loadHistory()
+    }
 
     func record(level: LogLevel, category: LogCategory, message: String) {
         let entry = LogEntry(date: Date(), level: level, category: category, message: message)
@@ -124,10 +126,49 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
         } else {
             DispatchQueue.main.async { [weak self] in self?.entries = [] }
         }
-        let url = fileURL
+        let logURL = fileURL
+        let errorURL = stderrURL
         fileQueue.async {
-            try? FileManager.default.removeItem(at: url)
+            try? FileManager.default.removeItem(at: logURL)
+            try? FileManager.default.removeItem(at: errorURL)
         }
+    }
+
+    // MARK: - 历史 / 崩溃
+
+    /// 把上一会话写到 stderr 的崩溃内容并入主日志。
+    private func mergePreviousCrash() {
+        guard let text = try? String(contentsOf: stderrURL, encoding: .utf8), !text.isEmpty else { return }
+        let block = "\n===== 上一次会话的崩溃 / 错误输出 =====\n" + text + "\n===== 结束 =====\n"
+        if let data = block.data(using: .utf8) {
+            if let handle = try? FileHandle(forWritingTo: fileURL) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: data)
+            } else {
+                try? data.write(to: fileURL, options: .atomic)
+            }
+        }
+        try? Data().write(to: stderrURL)
+    }
+
+    /// 启动时加载最近的日志行，这样重启后也能看到上次会话（含崩溃）。
+    private func loadHistory() {
+        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        let lines = text.split(separator: "\n").suffix(400)
+        let seeded = lines.map { line -> LogEntry in
+            let string = String(line)
+            let isCrash = string.contains("崩溃") || string.contains("致命错误") || string.contains("未捕获异常")
+                || string.contains("Fatal error") || string.contains("Exception")
+            return LogEntry(
+                date: Date(),
+                level: isCrash ? .error : .info,
+                category: .app,
+                message: "[上次会话] " + string
+            )
+        }
+        storage = seeded
+        entries = seeded
     }
 
     // MARK: - 文件写入

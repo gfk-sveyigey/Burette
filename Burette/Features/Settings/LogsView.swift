@@ -34,7 +34,7 @@ struct LogsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                ShareLink(item: center.logFileURL) {
+                ShareLink(item: center.fileURL) {
                     Image(systemName: "square.and.arrow.up")
                 }
                 .disabled(center.entries.isEmpty)
@@ -94,7 +94,7 @@ struct LogsView: View {
     }
 
     private func text(_ entry: LogEntry) -> String {
-        "[(time(entry.date))] [(entry.level.rawValue)] [(entry.category.label)] (entry.message)"
+        "\(time(entry.date)) [\(entry.level.rawValue)] [\(entry.category.label)] \(entry.message)"
     }
 
     private func color(_ level: LogLevel) -> Color {

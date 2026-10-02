@@ -1,9 +1,7 @@
 import SwiftUI
-import UIKit
 
 struct RootView: View {
     @EnvironmentObject private var env: AppEnvironment
-    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Group {
@@ -26,22 +24,6 @@ struct RootView: View {
             Button("好", role: .cancel) { env.lastError = nil }
         } message: {
             Text(env.lastError ?? "")
-        }
-        .onAppear { applyKeyboardAppearance() }
-        .onChange(of: colorScheme) { _, _ in applyKeyboardAppearance() }
-    }
-
-    /// 让键盘跟随系统深浅模式（SwiftUI 默认不会自动更新键盘外观）。
-    private func applyKeyboardAppearance() {
-        let appearance: UIKeyboardAppearance = colorScheme == .dark ? .dark : .light
-        UITextField.appearance().keyboardAppearance = appearance
-        UITextView.appearance().keyboardAppearance = appearance
-
-        for scene in UIApplication.shared.connectedScenes {
-            guard let windowScene = scene as? UIWindowScene else { continue }
-            for window in windowScene.windows {
-                window.overrideUserInterfaceStyle = .unspecified
-            }
         }
     }
 }
