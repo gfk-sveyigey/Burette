@@ -61,7 +61,7 @@ struct WorkspaceManager: Sendable {
     func listFiles(repository: Repository) throws -> [String] {
         let base = folder(for: repository)
         guard FileManager.default.fileExists(atPath: base.path) else { return [] }
-        let basePath = base.path.hasSuffix("/") ? base.path : base.path + "/"
+        let baseComponents = Self.normalizedComponents(base)
 
         var result: [String] = []
         if let enumerator = FileManager.default.enumerator(
@@ -72,10 +72,22 @@ struct WorkspaceManager: Sendable {
             for case let url as URL in enumerator {
                 let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
                 guard values?.isRegularFile == true else { continue }
-                result.append(url.path.replacingOccurrences(of: basePath, with: ""))
+                let components = Self.normalizedComponents(url)
+                guard components.count > baseComponents.count else { continue }
+                result.append(components.dropFirst(baseComponents.count).joined(separator: "/"))
             }
         }
         return result.sorted()
+    }
+
+    /// 归一化为路径分量后再求相对路径。
+    ///
+    /// iOS 上工作区目录常用 `/var/...`，而 FileManager 枚举出的 URL 可能是
+    /// `/private/var/...`（/var 是 /private/var 的符号链接）。直接比较字符串会
+    /// 剥离失败，把绝对路径泄漏进文件树（顶层出现 "private"）。先 resolvingSymlinksInPath
+    /// 再按分量比较即可稳妥得到相对路径。
+    private static func normalizedComponents(_ url: URL) -> [String] {
+        url.standardizedFileURL.resolvingSymlinksInPath().pathComponents
     }
 
     /// 读取工作区所有文本文件，供 AI 上下文与改动对比使用。
