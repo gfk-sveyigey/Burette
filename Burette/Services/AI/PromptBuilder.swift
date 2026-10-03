@@ -14,7 +14,7 @@ enum PromptBuilder {
 
     工作方式：
     1. 用户会给出仓库文件树，以及相关文件的完整内容，全部在紧随其后的上下文消息里（用 "===== 路径 =====" 包裹）。
-    2. 直接基于这些内容工作，不要要求用户粘贴文件，也不要回复「我没有收到文件」；只有上下文里确实一个文件都没有时，才提醒用户先在「仓库」页拉取项目。
+    2. 直接基于这些内容工作，不要要求用户粘贴文件，也不要回复「我没有收到文件」；上下文消息里会明确说明是否已包含全部文件、以及哪些文件因体积原因未附带——需要时请直接列出要查看的路径。只有上下文里确实一个文件都没有时，才提醒用户先在「仓库」页拉取项目。
     3. 根据用户的修改要求，直接给出 unified diff。
     4. 只输出 diff，不要输出解释性文字。
 
@@ -39,40 +39,62 @@ enum PromptBuilder {
         return AIChatMessage(role: "system", content: text)
     }
 
-    /// 把文件树与相关文件内容打包成一条上下文消息。
-    static func contextMessage(fileTree: [String], files: [FileContext]) -> AIChatMessage {
-        var text = "仓库文件树：\n"
-        text += fileTree.prefix(400).joined(separator: "\n")
+    /// 把文件树与文件内容打包成一条上下文消息。
+    static func contextMessage(fileTree: [String], files: [FileContext], omitted: [String] = []) -> AIChatMessage {
+        var text = "仓库文件树（共 \(fileTree.count) 个文件）：\n"
+        text += fileTree.prefix(2_000).joined(separator: "\n")
+        if fileTree.count > 2_000 {
+            text += "\n…（文件树过长已截断）"
+        }
 
         if files.isEmpty {
             text += "\n\n（本次没有附带任何文件内容，工作区可能是空的。）"
         } else {
-            text += "\n\n相关文件内容（共 \(files.count) 个）：\n"
+            text += "\n\n以下是这些文件的完整内容（共 \(files.count) 个）：\n"
             for file in files {
                 text += "\n===== \(file.path) =====\n"
                 text += file.content
                 text += "\n===== end \(file.path) =====\n"
             }
+            if omitted.isEmpty {
+                text += "\n以上已包含工作区里的全部文本文件，不需要再向用户索要文件。\n"
+            } else {
+                text += "\n因体积限制，以下 \(omitted.count) 个文件这次没有附带内容，需要时请在回复里明确列出要看的路径（不要泛泛地说「文件缺失」）：\n"
+                text += omitted.map { "- " + $0 }.joined(separator: "\n")
+                text += "\n"
+            }
         }
         return AIChatMessage(role: "user", content: text)
     }
 
-    /// 组装上下文文件：总长度在预算内时包含全部文件，超出时优先相关文件并做截断，
-    /// 避免一次请求塞入整个大仓库导致耗时过长或超时。
-    static func contextFiles(
+    /// 一次上下文组装的产物。
+    struct ContextBundle {
+        let files: [FileContext]
+        /// 因预算不足而未附带内容的文件路径（会明确告诉模型，避免它说「文件缺失」）。
+        let omitted: [String]
+
+        var totalCharacters: Int { files.reduce(0) { $0 + $1.content.count } }
+    }
+
+    /// 组装上下文文件。
+    ///
+    /// 默认预算足够放下一个中等规模的项目（覆盖不了所有文件时会明确列出未附带的路径，
+    /// 而不是静默丢弃导致模型误以为没有文件）。
+    static func contextBundle(
         for instruction: String,
         snapshot: [String: String],
-        budget: Int = 120_000,
-        perFileLimit: Int = 24_000
-    ) -> [FileContext] {
+        budget: Int = 800_000,
+        perFileLimit: Int = 200_000
+    ) -> ContextBundle {
         let total = snapshot.values.reduce(0) { $0 + $1.count }
+
+        // 小仓库直接全量；大仓库先放相关文件，再按剩余预算补齐其余文件。
         var ordered: [String] = []
         var seen = Set<String>()
-
         if total <= budget {
             ordered = snapshot.keys.sorted()
         } else {
-            for file in relevantFiles(for: instruction, in: snapshot, limit: 20) {
+            for file in relevantFiles(for: instruction, in: snapshot, limit: 30) {
                 if seen.insert(file.path).inserted { ordered.append(file.path) }
             }
             for path in snapshot.keys.sorted() {
@@ -82,19 +104,49 @@ enum PromptBuilder {
 
         var remaining = budget
         var result: [FileContext] = []
+        var omitted: [String] = []
+        var truncated = false
+
         for path in ordered {
-            guard remaining > 0, let content = snapshot[path] else { break }
+            guard let content = snapshot[path] else { continue }
+            if remaining <= 0 {
+                omitted.append(path)
+                continue
+            }
             if content.count > perFileLimit {
                 result.append(
                     FileContext(path: path, content: String(content.prefix(perFileLimit)) + "\n…（内容过长已截断）")
                 )
                 remaining -= perFileLimit
-            } else {
+                truncated = true
+            } else if content.count <= remaining {
                 result.append(FileContext(path: path, content: content))
                 remaining -= content.count
+            } else {
+                // 剩余预算放不下整个文件：宁可完整放入（大文件仍然有价值），否则记为未附带。
+                if content.count <= perFileLimit {
+                    result.append(FileContext(path: path, content: content))
+                    remaining -= content.count
+                } else {
+                    omitted.append(path)
+                }
             }
         }
-        return result
+
+        if truncated {
+            Log.warning("上下文中有文件因过长被截断", .ai)
+        }
+        return ContextBundle(files: result, omitted: omitted)
+    }
+
+    /// 兼容旧调用：只取文件列表。
+    static func contextFiles(
+        for instruction: String,
+        snapshot: [String: String],
+        budget: Int = 800_000,
+        perFileLimit: Int = 200_000
+    ) -> [FileContext] {
+        contextBundle(for: instruction, snapshot: snapshot, budget: budget, perFileLimit: perFileLimit).files
     }
 
     /// 根据用户指令挑选相关文件（按路径或内容包含关键词打分）。

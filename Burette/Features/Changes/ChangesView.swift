@@ -6,6 +6,7 @@ struct ChangesView: View {
     @State private var preview: FileChange?
     @State private var toast: String?
     @State private var errorText: String?
+    @State private var showingPushConfirm = false
     @FocusState private var isEditingMessage: Bool
 
     var body: some View {
@@ -24,8 +25,8 @@ struct ChangesView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    guard let repository = env.selectedRepository else { return }
-                    commit(in: repository)
+                    guard env.selectedRepository != nil else { return }
+                    showingPushConfirm = true
                 } label: {
                     Image(systemName: "arrow.up.circle")
                 }
@@ -45,6 +46,30 @@ struct ChangesView: View {
         } message: {
             Text(errorText ?? "")
         }
+        .confirmationDialog(
+            "提交并推送",
+            isPresented: $showingPushConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("推送到 \(env.selectedRepository?.name ?? "")") {
+                guard let repository = env.selectedRepository else { return }
+                commit(in: repository)
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text(pushSummary)
+        }
+    }
+
+    /// 推送确认框里的目标信息，避免推错仓库 / 分支。
+    private var pushSummary: String {
+        guard let repository = env.selectedRepository else { return "" }
+        let staged = env.pendingChanges(for: repository).filter { $0.isStaged }.count
+        return """
+        仓库：\(repository.fullName)
+        分支：\(repository.currentBranch)
+        文件：\(staged) 个已勾选
+        """
     }
 
     /// 当前仓库是否有可提交的改动。
@@ -59,6 +84,25 @@ struct ChangesView: View {
         let stagedCount = changes.filter { $0.isStaged }.count
 
         List {
+            Section {
+                HStack(spacing: 10) {
+                    Image(systemName: "square.stack.3d.up")
+                        .foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(repository.fullName)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text("分支 \(repository.currentBranch)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("\(changes.count) 个改动 · 已勾选 \(stagedCount)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             if changes.isEmpty {
                 Text("工作区没有未提交的改动。")
                     .foregroundStyle(.secondary)
@@ -106,7 +150,7 @@ struct ChangesView: View {
             let ok = await env.commitStaged(in: repository, message: message)
             if ok {
                 commitMessage = ""
-                showToast("已提交并推送")
+                showToast("已推送到 \(repository.fullName)@\(repository.currentBranch)")
             } else {
                 errorText = env.lastError ?? "提交失败，请稍后再试。"
             }

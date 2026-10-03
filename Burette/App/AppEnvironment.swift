@@ -31,6 +31,8 @@ final class AppEnvironment: ObservableObject {
     @Published var agentStartedAt: Date?
     /// 最近一次自动应用改动的提示，界面读取后置空。
     @Published var applyNotice: String?
+    /// 本次请求附带了哪些文件（界面读取后置空）。
+    @Published var contextNotice: String?
     @Published var busyMessage: String?
     @Published var lastError: String?
 
@@ -523,21 +525,30 @@ final class AppEnvironment: ObservableObject {
         let tree = (try? workspace.listFiles(repository: repository)) ?? []
 
         let files: [FileContext]
+        var omittedFiles: [String] = []
         if contextPaths.isEmpty {
-            // 未显式指定时把整个项目作为参考；超出预算会自动挑选相关文件并截断。
-            files = PromptBuilder.contextFiles(for: trimmed, snapshot: snapshot)
+            // 未显式指定时把整个项目作为参考；预算内会包含全部文本文件。
+            let bundle = PromptBuilder.contextBundle(for: trimmed, snapshot: snapshot)
+            files = bundle.files
+            omittedFiles = bundle.omitted
         } else {
             files = contextPaths.compactMap { path in
                 guard let content = snapshot[path] else { return nil }
                 return FileContext(path: path, content: content)
             }
+            omittedFiles = contextPaths.filter { snapshot[$0] == nil }
         }
 
         let contextChars = files.reduce(0) { $0 + $1.content.count }
-        Log.debug("上下文：文件树 \(tree.count) 项，参考文件 \(files.count) 个，共 \(contextChars) 字", .ai)
+        Log.debug("上下文：文件树 \(tree.count) 项，附带文件 \(files.count) 个，未附带 \(omittedFiles.count) 个，共 \(contextChars) 字", .ai)
+        if omittedFiles.isEmpty {
+            contextNotice = "已附带全部 \(files.count) 个文件"
+        } else {
+            contextNotice = "已附带 \(files.count)/\(files.count + omittedFiles.count) 个文件，其余超出体积预算未附带"
+        }
 
         var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
-        apiMessages.append(PromptBuilder.contextMessage(fileTree: tree, files: files))
+        apiMessages.append(PromptBuilder.contextMessage(fileTree: tree, files: files, omitted: omittedFiles))
         for message in history.suffix(12) where message.role != .system {
             apiMessages.append(message.apiMessage)
         }

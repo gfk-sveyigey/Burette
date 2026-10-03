@@ -94,6 +94,7 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 - send 为非阻塞：内部持有 sendTask，再次发送或点击停止键会调用 cancelSend() 取消在途请求，取消不写入错误提示。
 - AI 返回的 diff 会自动应用到工作区（agentStatus 走完后由 AppEnvironment.apply 写入），界面只展示说明文字与结果徽标（applied / partial / failed，只有真正写入工作区才显示「已应用」）；气泡正文用 DiffExtractor.prose 去掉 diff 原文。
 - 工作区为空（未拉取 / 拉取失败）时，发送前会自动拉取一次；仍为空则直接提示用户去「仓库」页拉取，而不是把空文件树丢给模型让它要求用户粘贴代码。读取工作区时单个非 UTF-8 文件会按 lossy 解码跳过，不会让整份快照失败。
+- 上下文按默认 80 万字符预算组装（\`PromptBuilder.contextBundle\`）：预算内附带**全部**文本文件，放不下的会作为 \`omitted\` 明确列在上下文里并提示用户（Toast「已附带 X/Y 个文件」），避免模型误判「文件缺失」而要求用户粘贴代码。
 - 稳定性：请求期间用 BackgroundTask 申请后台执行时间，退到后台 / 锁屏时尽量跑完；上下文按字符预算裁剪（PromptBuilder.contextFiles，超出时优先相关文件并截断），历史只带最近 12 条；AIClient 最多重试 4 次并指数退避。
 - 界面用 agentStartedAt 实时显示已用时长（统一中文单位，如「45秒」「1分23秒」），回复气泡展示最终用时。
 - 取消类错误（URLError.cancelled / CancellationError）统一由 Support/Cancellation.swift 识别，只记调试日志，不弹错。
@@ -104,7 +105,8 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 进入仓库后的文件页顶栏可打开 Actions，查看该仓库的 workflow 运行记录：
 
 - \`GitHubClient.workflowRuns / workflowRun / workflowJobs / rerunWorkflow / cancelWorkflow\` 封装 \`/repos/{owner}/{repo}/actions/*\`
-- 列表展示状态、分支、运行号与相对时间，可切换「只看当前分支」
+- 列表默认展示**全部分支**（否则进行中的运行不在当前分支就会看不到），顶部显示仓库 / 分支与「进行中」指示
+- 有排队 / 进行中的运行时每 10 秒自动刷新，详情页同样轮询 job / step 状态
 - 详情页展示 job / step 状态，并支持重新运行与取消（需要 PAT 具备 Actions 读 / 写权限）
 
 ### 3.9 实时活动（灵动岛）
@@ -126,6 +128,7 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 
 | 需求 | 当前实现 | 说明 |
 |---|---|---|
+| 推送确认 | 改动页顶部显示仓库 + 分支，推送前弹确认框 | 避免多仓库下推错库 |
 | 本地存储 SQLite | 先用 JSON 文件 | 已通过协议隔离，替换成本低 |
 | 语法高亮(Runestone) | 内置正则高亮 + 行号栏（`Support/CodeHighlighting.swift`） | 覆盖注释/字符串/数字/关键字/类型/函数/装饰器等 token 及 Markdown、HTML、CSS、JSON、YAML 特例；Runestone 见 project.yml，接入后替换 |
 | Liquid Glass | 标准组件 + `Support/LiquidGlass.swift` 封装 | iOS 26 用 `glassEffect`；iOS 17–25 降级为 `ultraThinMaterial` |
