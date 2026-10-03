@@ -134,3 +134,52 @@ struct GitHubTreeEntry: Encodable, Sendable {
         }
     }
 }
+
+// MARK: - Actions
+
+struct GitHubWorkflowRuns: Codable, Sendable {
+    let totalCount: Int
+    let workflowRuns: [GitHubWorkflowRun]
+}
+
+struct GitHubWorkflowRun: Codable, Sendable, Identifiable {
+    let id: Int
+    let name: String?
+    let displayTitle: String?
+    let headBranch: String?
+    let headSha: String?
+    let event: String?
+    let status: String?
+    let conclusion: String?
+    let runNumber: Int?
+    let runAttempt: Int?
+    let createdAt: String?
+    let updatedAt: String?
+    let htmlUrl: URL?
+    let workflowId: Int?
+}
+
+struct GitHubWorkflowJobs: Codable, Sendable {
+    let totalCount: Int
+    let jobs: [GitHubWorkflowJob]
+}
+
+struct GitHubWorkflowJob: Codable, Sendable, Identifiable {
+    let id: Int
+    let name: String
+    let status: String?
+    let conclusion: String?
+    let startedAt: String?
+    let completedAt: String?
+    let htmlUrl: URL?
+    let steps: [GitHubWorkflowStep]?
+}
+
+struct GitHubWorkflowStep: Codable, Sendable, Identifiable {
+    let name: String
+    let number: Int
+    let status: String?
+    let conclusion: String?
+
+    var id: Int { number }
+}

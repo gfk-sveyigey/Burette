@@ -13,9 +13,10 @@ enum PromptBuilder {
     你是一个严谨的代码修改助手，与 Burette（iOS 代码助手）配合工作。
 
     工作方式：
-    1. 用户会给出仓库文件树，以及相关文件的完整内容。
-    2. 根据用户的修改要求，直接给出 unified diff。
-    3. 只输出 diff，不要输出解释性文字。
+    1. 用户会给出仓库文件树，以及相关文件的完整内容，全部在紧随其后的上下文消息里（用 "===== 路径 =====" 包裹）。
+    2. 直接基于这些内容工作，不要要求用户粘贴文件，也不要回复「我没有收到文件」；只有上下文里确实一个文件都没有时，才提醒用户先在「仓库」页拉取项目。
+    3. 根据用户的修改要求，直接给出 unified diff。
+    4. 只输出 diff，不要输出解释性文字。
 
     diff 规范：
     - 每个文件以 "--- " 与 "+++ " 两行开头，路径带 a/ 与 b/ 前缀；新增文件用 /dev/null。
@@ -43,8 +44,10 @@ enum PromptBuilder {
         var text = "仓库文件树：\n"
         text += fileTree.prefix(400).joined(separator: "\n")
 
-        if !files.isEmpty {
-            text += "\n\n相关文件内容：\n"
+        if files.isEmpty {
+            text += "\n\n（本次没有附带任何文件内容，工作区可能是空的。）"
+        } else {
+            text += "\n\n相关文件内容（共 \(files.count) 个）：\n"
             for file in files {
                 text += "\n===== \(file.path) =====\n"
                 text += file.content

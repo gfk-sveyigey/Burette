@@ -19,6 +19,10 @@ targets:
     platform: iOS
     sources:
       - path: Burette
+      # 实时活动属性在 App 与 Widget 扩展之间共享（同名类型）。
+      - path: Shared
+    dependencies:
+      - target: BuretteWidget
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.burette.app
@@ -41,6 +45,26 @@ targets:
     #     product: TreeSitterLanguages
     #     version: 0.3.0
 
+  # 灵动岛 / 锁屏实时活动扩展：对话进行时展示进度。
+  BuretteWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: BuretteWidget
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.burette.app.widget
+        PRODUCT_NAME: BuretteWidget
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: BuretteWidget/Info.plist
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        APPLICATION_EXTENSION_API_ONLY: YES
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+
   BuretteTests:
     type: bundle.unit-test
     platform: iOS
@@ -58,6 +82,7 @@ schemes:
     build:
       targets:
         Burette: all
+        BuretteWidget: all
         BuretteTests: [test]
     run:
       config: Debug
