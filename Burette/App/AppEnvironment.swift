@@ -31,8 +31,6 @@ final class AppEnvironment: ObservableObject {
     @Published var agentStartedAt: Date?
     /// 最近一次自动应用改动的提示，界面读取后置空。
     @Published var applyNotice: String?
-    /// 本次请求附带了哪些文件（界面读取后置空）。
-    @Published var contextNotice: String?
     @Published var busyMessage: String?
     @Published var lastError: String?
 
@@ -47,6 +45,10 @@ final class AppEnvironment: ObservableObject {
 
     private let store: PersistenceStore
     private var sendTask: Task<Void, Never>?
+    /// 因网络中断 / 锁屏被系统打断的请求：回到前台或稍后自动重试，用户不必重新发一遍。
+    private var pendingResend: (text: String, repositoryID: UUID)?
+    /// 本次请求是否由用户主动中断（用于区分系统级中断）。
+    private var cancelledByUser = false
     /// 当前实时活动对应的仓库名（用于灵动岛展示）。
     private var liveActivityRepository: String?
 
@@ -438,6 +440,8 @@ final class AppEnvironment: ObservableObject {
     /// 启动一次对话（非阻塞）。再次调用会先取消上一次请求。
     func send(_ text: String, in repository: Repository, contextPaths: [String] = []) {
         sendTask?.cancel()
+        cancelledByUser = false
+        pendingResend = nil
         sendTask = Task { [weak self] in
             await self?.performSend(text, in: repository, contextPaths: contextPaths)
         }
@@ -456,6 +460,8 @@ final class AppEnvironment: ObservableObject {
     /// 中断正在进行的对话请求（保留已经发出的用户消息）。
     func cancelSend() {
         guard sendTask != nil || isSending else { return }
+        cancelledByUser = true
+        pendingResend = nil
         sendTask?.cancel()
         sendTask = nil
         isSending = false
@@ -466,7 +472,7 @@ final class AppEnvironment: ObservableObject {
         Log.info("已中断对话请求", .ai)
     }
 
-    private func performSend(_ text: String, in repository: Repository, contextPaths: [String]) async {
+    private func performSend(_ text: String, in repository: Repository, contextPaths: [String], appendUserMessage: Bool = true) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -500,8 +506,10 @@ final class AppEnvironment: ObservableObject {
         Log.info("发送对话请求：\(repository.fullName)，\(trimmed.count) 字", .ai)
 
         let conversation = ensureConversation(for: repository)
-        appendMessage(ChatMessage(role: .user, content: trimmed), to: conversation.id, in: repository)
-        persistAll()
+        if appendUserMessage {
+            appendMessage(ChatMessage(role: .user, content: trimmed), to: conversation.id, in: repository)
+            persistAll()
+        }
 
         let history = messages(for: repository)
 
@@ -649,13 +657,51 @@ final class AppEnvironment: ObservableObject {
             )
             appendMessage(message, to: conversation.id, in: repository)
             persistAll()
+            pendingResend = nil
         } catch {
             if Cancellation.isCancellation(error) {
-                Log.info("对话请求已中断", .ai)
+                if cancelledByUser {
+                    cancelledByUser = false
+                    Log.info("对话请求已被用户中断", .ai)
+                } else {
+                    // 锁屏 / 切后台等系统级中断：保留请求，回到前台自动重试。
+                    pendingResend = (trimmed, repository.id)
+                    lastError = "网络中断，已保留你的请求，回到前台会自动重试。"
+                    Log.warning("对话请求被系统中断，已保留待重试：\(repository.fullName)", .ai)
+                    schedulePendingResend()
+                }
+            } else if AIClient.isRetryable(error) {
+                // 切网 / 信号抖动：保留请求，稍后自动重试，不必重新发一遍。
+                pendingResend = (trimmed, repository.id)
+                lastError = "网络不稳定，已保留你的请求，稍后自动重试。"
+                Log.warning("网络错误，已保留待重试：\(error.localizedDescription)", .ai)
+                schedulePendingResend()
             } else {
                 lastError = error.localizedDescription
                 Log.error(error, .ai)
             }
+        }
+    }
+
+    /// 回到前台 / 网络恢复后自动重试被中断的请求。
+    func resumePendingSendIfNeeded() async {
+        guard pendingResend != nil, !isSending else { return }
+        guard let pending = pendingResend,
+              let repository = repositories.first(where: { $0.id == pending.repositoryID }) else {
+            pendingResend = nil
+            return
+        }
+        pendingResend = nil
+        Log.info("自动恢复被中断的对话：\(repository.fullName)", .ai)
+        await performSend(pending.text, in: repository, contextPaths: [], appendUserMessage: false)
+    }
+
+    /// 网络抖动时在后台稍等一会儿再自动重试一次；若仍失败会再次排队。
+    private func schedulePendingResend() {
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard let self, self.pendingResend != nil, !self.isSending else { return }
+            await self.resumePendingSendIfNeeded()
         }
     }
 

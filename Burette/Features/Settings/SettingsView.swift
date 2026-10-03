@@ -9,6 +9,7 @@ enum AccountSheet: String, Identifiable {
 
 struct SettingsView: View {
     @EnvironmentObject private var env: AppEnvironment
+    @ObservedObject private var avatars = AvatarStore.shared
 
     @State private var editing: AIProviderConfig?
     @State private var checking: UUID?
@@ -212,13 +213,18 @@ struct SettingsView: View {
     @ViewBuilder
     private var avatar: some View {
         if let url = env.currentUser?.avatarUrl {
-            AsyncImage(url: url) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                ProgressView()
+            Group {
+                // 命中缓存就直接显示，未命中才显示加载指示。
+                if let image = avatars.cachedImage(for: url) {
+                    Image(uiImage: image).resizable().scaledToFill()
+                } else {
+                    ProgressView()
+                }
             }
             .frame(width: 40, height: 40)
             .clipShape(Circle())
+            // 每次进入页面都在后台刷新一次，有变化才更新。
+            .task(id: url) { await avatars.refresh(url: url) }
         } else {
             Image(systemName: "person.crop.circle.fill")
                 .font(.system(size: 36))

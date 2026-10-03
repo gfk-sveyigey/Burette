@@ -24,8 +24,13 @@ struct BuretteApp: App {
                 }
         }
         .onChange(of: scenePhase) { _, phase in
-            // 进入后台 / 非活跃时把排队的日志写盘，避免进程被回收时丢日志。
-            if phase != .active { LogCenter.shared.flush() }
+            if phase == .active {
+                // 回到前台：如果上次请求被锁屏 / 切网打断，自动接着跑完。
+                Task { await environment.resumePendingSendIfNeeded() }
+            } else {
+                // 进入后台 / 非活跃时把排队的日志写盘，避免进程被回收时丢日志。
+                LogCenter.shared.flush()
+            }
         }
     }
 }

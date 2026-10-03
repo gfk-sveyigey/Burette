@@ -15,6 +15,20 @@ struct LogsView: View {
         return list.reversed()
     }
 
+    private var entriesBinding: Binding<Int> {
+        Binding(
+            get: { center.maxEntries },
+            set: { center.updateCleanup(maxEntries: $0, retentionDays: center.retentionDays) }
+        )
+    }
+
+    private var daysBinding: Binding<Int> {
+        Binding(
+            get: { center.retentionDays },
+            set: { center.updateCleanup(maxEntries: center.maxEntries, retentionDays: $0) }
+        )
+    }
+
     var body: some View {
         List {
             if filtered.isEmpty {
@@ -35,15 +49,32 @@ struct LogsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                Menu {
+                    Section("清理设置") {
+                        Picker("保留条数", selection: entriesBinding) {
+                            ForEach(LogCenter.Cleanup.entriesOptions, id: \.self) { value in
+                                Text(LogCenter.Cleanup.entriesLabel(value)).tag(value)
+                            }
+                        }
+                        Picker("保留天数", selection: daysBinding) {
+                            ForEach(LogCenter.Cleanup.daysOptions, id: \.self) { value in
+                                Text(LogCenter.Cleanup.daysLabel(value)).tag(value)
+                            }
+                        }
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        center.clear()
+                    } label: {
+                        Label("立即清空", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .accessibilityLabel("日志清理设置")
+
                 ShareLink(item: center.fileURL) {
                     Image(systemName: "square.and.arrow.up")
-                }
-                .disabled(center.entries.isEmpty)
-
-                Button(role: .destructive) {
-                    center.clear()
-                } label: {
-                    Image(systemName: "trash")
                 }
                 .disabled(center.entries.isEmpty)
             }
