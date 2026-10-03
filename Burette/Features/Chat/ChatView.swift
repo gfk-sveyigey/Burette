@@ -143,7 +143,7 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
             Text("Burette Agent")
                 .font(.headline)
-            Text("描述你想怎么改。Agent 会读取整个项目的文件、请求模型，并把改动自动应用到工作区，完成后通知你。")
+            Text("描述你想怎么改。Agent 会先拿到文件树，再按需读取相关文件，并把改动自动应用到工作区，完成后通知你。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

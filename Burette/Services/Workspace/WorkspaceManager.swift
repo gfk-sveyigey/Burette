@@ -72,9 +72,16 @@ struct WorkspaceManager: Sendable {
         if let enumerator = FileManager.default.enumerator(
             at: base,
             includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
+            options: []
         ) {
             for case let url as URL in enumerator {
+                let name = url.lastPathComponent
+                // .git 体积大且与源码无关，整棵跳过；其余隐藏文件（.github、.gitignore 等）保留，
+                // 让文件树与仓库真实内容一致，模型不会以为这些文件不存在。
+                if name == ".git" || name == ".DS_Store" {
+                    enumerator.skipDescendants()
+                    continue
+                }
                 let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
                 guard values?.isRegularFile == true else { continue }
                 let components = Self.normalizedComponents(url)
