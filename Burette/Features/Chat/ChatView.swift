@@ -354,12 +354,12 @@ struct AgentRunView: View {
     let status: String?
     let startedAt: Date?
 
-    private static let steps = ["整理仓库上下文", "请求 AI 模型", "解析改动"]
+    private static let steps = ["读取工作区", "请求模型", "解析改动"]
 
     private var currentStep: Int {
         guard let status else { return 0 }
+        if status.contains("解析") || status.contains("修复") { return 2 }
         if status.contains("模型") { return 1 }
-        if status.contains("解析") { return 2 }
         return 0
     }
 
@@ -386,6 +386,12 @@ struct AgentRunView: View {
                 ProgressView().controlSize(.mini)
             }
             .foregroundStyle(.secondary)
+
+            // 实时的具体进度，避免提示看起来一直停在同一句。
+            Text(status ?? "准备中…")
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
 
             ForEach(Array(Self.steps.enumerated()), id: \.offset) { index, step in
                 HStack(spacing: 8) {
