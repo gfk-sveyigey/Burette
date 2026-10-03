@@ -1,7 +1,72 @@
 import SwiftUI
 
+/// 改动页（一级）：列出所有仓库，点进某个仓库查看它的改动。
 struct ChangesView: View {
     @EnvironmentObject private var env: AppEnvironment
+
+    var body: some View {
+        Group {
+            if env.repositories.isEmpty {
+                ContentUnavailableView(
+                    "还没有仓库",
+                    systemImage: "arrow.triangle.branch",
+                    description: Text("先去「仓库」页添加项目，改动会显示在这里。")
+                )
+            } else {
+                List {
+                    ForEach(env.repositories) { repository in
+                        NavigationLink {
+                            RepositoryChangesView(repository: repository)
+                        } label: {
+                            ChangesRepositoryRow(repository: repository)
+                        }
+                    }
+                }
+                .listStyle(.insetGrouped)
+            }
+        }
+        .navigationTitle("改动")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+}
+
+/// 一级列表里的一行：仓库 + 分支 + 改动数量。
+private struct ChangesRepositoryRow: View {
+    @EnvironmentObject private var env: AppEnvironment
+    let repository: Repository
+
+    var body: some View {
+        let changes = env.pendingChanges(for: repository)
+        let staged = changes.filter { $0.isStaged }.count
+
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(repository.fullName)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("分支 \(repository.currentBranch)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Text(changes.isEmpty ? "无改动" : "\(changes.count) 个改动 · 已勾选 \(staged)")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// 改动页（二级）：某个仓库的改动列表 + 提交说明 + 提交并推送。
+struct RepositoryChangesView: View {
+    @EnvironmentObject private var env: AppEnvironment
+    let repository: Repository
+
     @State private var commitMessage = ""
     @State private var preview: FileChange?
     @State private var toast: String?
@@ -10,60 +75,49 @@ struct ChangesView: View {
     @FocusState private var isEditingMessage: Bool
 
     var body: some View {
-        Group {
-            if let repository = env.selectedRepository {
-                content(for: repository)
-            } else {
-                ContentUnavailableView(
-                    "请先选择仓库",
-                    systemImage: "arrow.triangle.branch"
-                )
-            }
-        }
-        .navigationTitle("改动")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    guard env.selectedRepository != nil else { return }
-                    showingPushConfirm = true
-                } label: {
-                    Image(systemName: "arrow.up.circle")
+        content
+            .navigationTitle(repository.name)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        isEditingMessage = false
+                        showingPushConfirm = true
+                    } label: {
+                        Image(systemName: "arrow.up.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canCommit)
+                    .accessibilityLabel("提交并推送")
                 }
-                .buttonStyle(.plain)
-                .disabled(!canCommit)
-                .accessibilityLabel("提交并推送")
             }
-        }
-        .alert(
-            "无法提交",
-            isPresented: Binding(
-                get: { errorText != nil },
-                set: { if !$0 { errorText = nil } }
-            )
-        ) {
-            Button("好", role: .cancel) { errorText = nil }
-        } message: {
-            Text(errorText ?? "")
-        }
-        .confirmationDialog(
-            "提交并推送",
-            isPresented: $showingPushConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("推送到 \(env.selectedRepository?.name ?? "")") {
-                guard let repository = env.selectedRepository else { return }
-                commit(in: repository)
+            .alert(
+                "无法提交",
+                isPresented: Binding(
+                    get: { errorText != nil },
+                    set: { if !$0 { errorText = nil } }
+                )
+            ) {
+                Button("好", role: .cancel) { errorText = nil }
+            } message: {
+                Text(errorText ?? "")
             }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text(pushSummary)
-        }
+            .confirmationDialog(
+                "提交并推送",
+                isPresented: $showingPushConfirm,
+                titleVisibility: .visible
+            ) {
+                Button("推送到 \(repository.name)") {
+                    commit()
+                }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text(pushSummary)
+            }
     }
 
     /// 推送确认框里的目标信息，避免推错仓库 / 分支。
     private var pushSummary: String {
-        guard let repository = env.selectedRepository else { return "" }
         let staged = env.pendingChanges(for: repository).filter { $0.isStaged }.count
         return """
         仓库：\(repository.fullName)
@@ -74,12 +128,11 @@ struct ChangesView: View {
 
     /// 当前仓库是否有可提交的改动。
     private var canCommit: Bool {
-        guard let repository = env.selectedRepository else { return false }
-        return !env.pendingChanges(for: repository).isEmpty
+        !env.pendingChanges(for: repository).isEmpty
     }
 
     @ViewBuilder
-    private func content(for repository: Repository) -> some View {
+    private var content: some View {
         let changes = env.pendingChanges(for: repository)
         let stagedCount = changes.filter { $0.isStaged }.count
 
@@ -109,7 +162,7 @@ struct ChangesView: View {
             }
 
             ForEach(changes) { change in
-                row(change, in: repository)
+                row(change)
                     .circularDeleteSwipe { env.discard(change: change, in: repository) }
             }
 
@@ -143,7 +196,7 @@ struct ChangesView: View {
         }
     }
 
-    private func commit(in repository: Repository) {
+    private func commit() {
         isEditingMessage = false
         let message = commitMessage
         Task {
@@ -165,7 +218,7 @@ struct ChangesView: View {
         }
     }
 
-    private func row(_ change: FileChange, in repository: Repository) -> some View {
+    private func row(_ change: FileChange) -> some View {
         HStack(spacing: 10) {
             Button {
                 env.setStaged(!change.isStaged, for: change, in: repository)

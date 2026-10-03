@@ -513,24 +513,32 @@ final class AppEnvironment: ObservableObject {
 
         let history = messages(for: repository)
 
-        setAgentStatus("正在整理仓库上下文…")
-        var snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
+        // 读取工作区放到后台线程：仓库大时这里是主要耗时点，放主线程会卡住界面与状态更新。
+        let workspace = self.workspace
+        setAgentStatus("正在读取工作区文件…")
+        var snapshot = await Task.detached(priority: .userInitiated) {
+            (try? workspace.snapshot(repository: repository)) ?? [:]
+        }.value
         // 工作区为空（还没拉取过 / 上次拉取失败）时先自动拉一次，
         // 否则模型只能看到空文件树，就会反过来要求用户粘贴文件内容。
         if snapshot.isEmpty {
             Log.warning("工作区为空，发送前自动拉取：\(repository.fullName)", .workspace)
-            setAgentStatus("正在拉取仓库文件…")
+            setAgentStatus("工作区为空，正在拉取 \(repository.fullName)…")
             await clone(repository)
-            snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
+            snapshot = await Task.detached(priority: .userInitiated) {
+                (try? workspace.snapshot(repository: repository)) ?? [:]
+            }.value
             guard !snapshot.isEmpty else {
                 agentStatus = nil
                 lastError = "工作区里没有可用文件，AI 无法读取项目。请先在「仓库」页对 \(repository.fullName) 执行一次拉取，并确认仓库不是空的。"
                 Log.error("工作区仍为空，已中止本次对话：\(repository.fullName)", .workspace)
                 return
             }
-            setAgentStatus("正在整理仓库上下文…")
         }
-        let tree = (try? workspace.listFiles(repository: repository)) ?? []
+        setAgentStatus("已载入 \(snapshot.count) 个文件，正在整理文件树…")
+        let tree = await Task.detached(priority: .userInitiated) {
+            (try? workspace.listFiles(repository: repository)) ?? []
+        }.value
 
         var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
         apiMessages.append(PromptBuilder.treeMessage(fileTree: tree))
@@ -563,7 +571,9 @@ final class AppEnvironment: ObservableObject {
             let maxRounds = 10
 
             for round in 1...maxRounds {
-                setAgentStatus(round == 1 ? "正在请求 AI 模型…" : "正在分析（已读 \(readPaths.count) 个文件）…")
+                setAgentStatus(round == 1
+                    ? "正在请求模型（先只发文件树）…"
+                    : "已读取 \(readPaths.count) 个文件，模型分析中…")
                 let output = try await aiClient.complete(config: config, apiKey: apiKey, messages: apiMessages)
                 try Task.checkCancellation()
 
@@ -576,6 +586,7 @@ final class AppEnvironment: ObservableObject {
                     break
                 }
 
+                setAgentStatus("模型请求读取 \(fresh.count) 个文件…")
                 let (found, missing) = Self.resolveRequestedPaths(fresh, in: tree)
                 var files: [FileContext] = []
                 for path in found {

@@ -55,6 +55,7 @@ struct AgentActivityLockScreenView: View {
         HStack(spacing: 12) {
             Image(systemName: "sparkles")
                 .font(.title3)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text("Burette Agent")
                     .font(.caption.bold())
@@ -63,9 +64,14 @@ struct AgentActivityLockScreenView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
-            Spacer(minLength: 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // 时长固定贴在整张卡片最右侧。
             Text(state.startedAt, style: .timer)
                 .font(.callout.monospacedDigit())
+                .multilineTextAlignment(.trailing)
+                .frame(minWidth: 56, alignment: .trailing)
+                .layoutPriority(1)
         }
         .padding(14)
     }
