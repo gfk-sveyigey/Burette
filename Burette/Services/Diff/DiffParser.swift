@@ -67,6 +67,12 @@ enum DiffParser {
             }
 
             if line.hasPrefix("--- ") {
+                // 模型有时不给 diff --git 头，而是直接连续拼接多个
+                // "--- a/x / +++ b/x" 段落。遇到新的文件头时先收尾上一个文件，
+                // 否则多个文件的 hunk 会被并进同一个 patch。
+                if builder.sawOldHeader || !builder.hunks.isEmpty {
+                    flush()
+                }
                 builder.oldPath = normalizePath(String(line.dropFirst(4)))
                 builder.sawOldHeader = true
                 index += 1
@@ -132,6 +138,13 @@ enum DiffParser {
                 continue
             }
 
+            // 模型给出的行号/计数经常有小误差；一旦遇到下一个文件头或 hunk 头，
+            // 说明当前 hunk 已经结束，必须停下来交给外层解析，否则会把 "--- a/x"
+            // 当成删除行吃掉，导致后续文件的改动丢失。
+            if line.hasPrefix("diff --git ") || line.hasPrefix("@@") || isFileHeaderStart(lines, at: index) {
+                break scan
+            }
+
             if line.isEmpty {
                 body.append(DiffLine(kind: .context, text: ""))
                 oldLeft -= 1
@@ -172,6 +185,12 @@ enum DiffParser {
         guard let first = parts.first, let start = Int(first) else { return nil }
         let count = parts.count > 1 ? (Int(parts[1]) ?? 0) : 1
         return (start, count)
+    }
+
+    /// 判断 index 处是否是 "--- x" / "+++ y" 这样的文件头对。
+    private static func isFileHeaderStart(_ lines: [String], at index: Int) -> Bool {
+        guard lines[index].hasPrefix("--- "), index + 1 < lines.count else { return false }
+        return lines[index + 1].hasPrefix("+++ ")
     }
 
     private static func normalizePath(_ raw: String) -> String? {

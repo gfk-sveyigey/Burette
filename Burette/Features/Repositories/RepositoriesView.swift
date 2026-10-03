@@ -58,15 +58,10 @@ struct RepositoriesView: View {
                     }
 
                     Menu {
-                        ForEach(env.branches(for: repository), id: \.self) { branch in
-                            Button {
-                                Task { await env.switchBranch(repository, to: branch) }
-                            } label: {
-                                if branch == repository.currentBranch {
-                                    Label(branch, systemImage: "checkmark")
-                                } else {
-                                    Text(branch)
-                                }
+                        // 内联 Picker 会把选中项的对号渲染在行尾（而不是行首）。
+                        Picker("切换分支", selection: branchSelection(for: repository)) {
+                            ForEach(env.branches(for: repository), id: \.self) { branch in
+                                Text(branch).tag(branch)
                             }
                         }
                     } label: {
@@ -158,6 +153,17 @@ struct RepositoriesView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+    }
+
+    /// 分支选择绑定：切换分支由 set 触发，对号位置交给 Menu 内联 Picker。
+    private func branchSelection(for repository: Repository) -> Binding<String> {
+        Binding(
+            get: { repository.currentBranch },
+            set: { branch in
+                guard branch != repository.currentBranch else { return }
+                Task { await env.switchBranch(repository, to: branch) }
+            }
+        )
     }
 
     private func exitSelection() {

@@ -102,7 +102,8 @@ struct AIClient: Sendable {
                 model: config.model,
                 messages: messages,
                 temperature: config.temperature,
-                stream: false
+                stream: false,
+                reasoningEffort: config.reasoningEffort
             )
         )
 
@@ -156,6 +157,13 @@ struct AIClient: Sendable {
         let messages: [AIChatMessage]
         let temperature: Double
         let stream: Bool
+        /// 模型强度；为 nil 时不会出现在请求体里（兼容不支持该参数的模型）。
+        var reasoningEffort: String?
+
+        enum CodingKeys: String, CodingKey {
+            case model, messages, temperature, stream
+            case reasoningEffort = "reasoning_effort"
+        }
     }
 
     private struct Response: Decodable {

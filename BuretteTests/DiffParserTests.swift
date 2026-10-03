@@ -111,4 +111,53 @@ final class DiffParserTests: XCTestCase {
         let patches = try DiffParser.parse(diff)
         XCTAssertEqual(patches.first?.hunks.first?.lines.count, 2)
     }
+    func testParsesBackToBackFileHeadersWithoutGitHeader() throws {
+        // 模型常常不给 diff --git 头，而是把多个 "--- x / +++ y" 段落直接拼在一起。
+        let diff = [
+            "--- a/A.swift",
+            "+++ b/A.swift",
+            "@@ -1,2 +1,2 @@",
+            " import Foundation",
+            "-let a = 1",
+            "+let a = 2",
+            "--- a/B.swift",
+            "+++ b/B.swift",
+            "@@ -1,2 +1,2 @@",
+            " let b = 1",
+            "-b",
+            "+c"
+        ].joined(separator: "\n")
+
+        let patches = try DiffParser.parse(diff)
+
+        XCTAssertEqual(patches.map(\.path), ["A.swift", "B.swift"])
+        XCTAssertEqual(patches.map { $0.hunks.count }, [1, 1])
+        XCTAssertEqual(patches[1].hunks[0].lines.first?.text, "let b = 1")
+    }
+
+    func testStopsHunkAtNextFileHeaderWhenCountsOverDeclared() throws {
+        // 模型把 hunk 计数写大了：必须在下一个文件头处停下，不能把 "--- a/B" 当删除行吃掉。
+        let diff = [
+            "--- a/A.swift",
+            "+++ b/A.swift",
+            "@@ -1,5 +1,5 @@",
+            " import Foundation",
+            "-let a = 1",
+            "+let a = 2",
+            "--- a/B.swift",
+            "+++ b/B.swift",
+            "@@ -1,1 +1,1 @@",
+            "-x",
+            "+y"
+        ].joined(separator: "\n")
+
+        let patches = try DiffParser.parse(diff)
+
+        XCTAssertEqual(patches.count, 2)
+        XCTAssertEqual(patches[0].path, "A.swift")
+        XCTAssertEqual(patches[0].addedLineCount, 1)
+        XCTAssertEqual(patches[0].removedLineCount, 1)
+        XCTAssertEqual(patches[1].path, "B.swift")
+        XCTAssertEqual(patches[1].addedLineCount, 1)
+    }
 }

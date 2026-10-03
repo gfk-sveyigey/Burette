@@ -20,6 +20,10 @@ struct AIProviderConfig: Identifiable, Codable, Hashable, Sendable {
 
     var temperature: Double
 
+    /// 模型强度，映射到 OpenAI 兼容接口的 reasoning_effort（low / medium / high）。
+    /// nil 表示不发送该参数，兼容不支持它的模型。
+    var reasoningEffort: String?
+
     init(
         id: UUID = UUID(),
         name: String,
@@ -27,7 +31,8 @@ struct AIProviderConfig: Identifiable, Codable, Hashable, Sendable {
         model: String,
         apiKeyID: String,
         extraInstructions: String? = nil,
-        temperature: Double = 0.2
+        temperature: Double = 0.2,
+        reasoningEffort: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -36,6 +41,27 @@ struct AIProviderConfig: Identifiable, Codable, Hashable, Sendable {
         self.apiKeyID = apiKeyID
         self.extraInstructions = extraInstructions
         self.temperature = temperature
+        self.reasoningEffort = reasoningEffort
+    }
+
+    /// 一个「模型强度」选项。
+    struct Strength: Identifiable, Hashable {
+        let value: String?
+        let label: String
+        var id: String { value ?? "default" }
+    }
+
+    /// 「模型强度」可选项，value 为空表示不发送 reasoning_effort。
+    static let strengthOptions: [Strength] = [
+        Strength(value: nil, label: "默认（不发送）"),
+        Strength(value: "low", label: "低"),
+        Strength(value: "medium", label: "中"),
+        Strength(value: "high", label: "高")
+    ]
+
+    /// 把 strengthOptions 里的 value 还原成展示用文案。
+    static func strengthLabel(for value: String) -> String? {
+        strengthOptions.first { $0.value == value }?.label
     }
 
     /// 归一化后的 chat completions 端点。

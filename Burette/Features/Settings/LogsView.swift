@@ -30,6 +30,7 @@ struct LogsView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .contentMargins(.top, 0, for: .scrollContent)
         .navigationTitle("运行日志")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -56,7 +57,7 @@ struct LogsView: View {
             }
             .pickerStyle(.segmented)
             .padding(.horizontal)
-            .padding(.vertical, 6)
+            .padding(.vertical, 4)
             .background(.bar)
         }
     }
