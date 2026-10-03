@@ -48,7 +48,10 @@ struct ActionsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Toggle("只看当前分支", isOn: $currentBranchOnly)
+                    Picker("分支范围", selection: $currentBranchOnly) {
+                        Text("只看当前分支").tag(true)
+                        Text("全部分支").tag(false)
+                    }
                     Button {
                         Task { await load() }
                     } label: {
