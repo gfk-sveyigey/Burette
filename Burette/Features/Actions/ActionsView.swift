@@ -1,118 +1,148 @@
 import SwiftUI
 
-/// 查看仓库的 GitHub Actions 运行记录（只读列表 + 详情 + 重新运行 / 取消）。
+// MARK: - 列表
+
+/// 查看仓库的 GitHub Actions 运行记录：列表 + 详情 + 重新运行 / 取消。
 struct ActionsView: View {
+    /// 列表展示范围。
+    private enum BranchScope: Hashable, CaseIterable, Identifiable {
+        case all
+        case current
+
+        var id: Self { self }
+
+        func label(currentBranch: String) -> String {
+            switch self {
+            case .all: return "全部分支"
+            case .current: return "只看当前分支（\(currentBranch)）"
+            }
+        }
+
+        var shortLabel: String {
+            switch self {
+            case .all: return "全部分支"
+            case .current: return "只看当前分支"
+            }
+        }
+    }
+
     @EnvironmentObject private var env: AppEnvironment
     let repository: Repository
 
-    /// 默认展示所有分支，否则进行中的运行如果不在当前分支就会「看不到」。
-    @State private var currentBranchOnly = false
+    /// 默认展示所有分支，否则进行中的运行不在当前分支就会「看不到」。
+    @State private var scope: BranchScope = .all
     @State private var runs: [GitHubWorkflowRun] = []
     @State private var isLoading = false
     @State private var errorText: String?
     @State private var selectedRun: GitHubWorkflowRun?
 
     var body: some View {
-        Group {
-            if isLoading && runs.isEmpty {
-                ProgressView("正在加载 Actions…")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let errorText, runs.isEmpty {
-                ContentUnavailableView(
-                    "加载失败",
-                    systemImage: "exclamationmark.triangle.fill",
-                    description: Text(errorText)
-                )
-            } else if runs.isEmpty {
-                ContentUnavailableView(
-                    "没有工作流运行",
-                    systemImage: "bolt.horizontal.circle",
-                    description: Text("这个仓库还没有 Actions 运行记录，或当前令牌没有 Actions 读取权限。")
-                )
-            } else {
-                List {
-                    Section {
-                        HStack(spacing: 8) {
-                            Image(systemName: "arrow.triangle.branch")
-                                .foregroundStyle(.secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(currentBranchOnly ? repository.currentBranch : repository.fullName)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Text(currentBranchOnly ? "只看当前分支" : "全部分支")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                            Spacer()
-                            if hasActiveRun {
-                                HStack(spacing: 6) {
-                                    ProgressView().controlSize(.mini)
-                                    Text("进行中")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(.orange)
-                                }
-                            } else {
-                                Text("\(runs.count) 条")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-
-                    ForEach(runs) { run in
-                        Button {
-                            selectedRun = run
-                        } label: {
-                            ActionRunRow(run: run)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .listStyle(.insetGrouped)
-                .refreshable { await load() }
-            }
-        }
-        .navigationTitle("Actions")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-<<<<<<< HEAD
-                    Toggle("只看当前分支（\(repository.currentBranch)）", isOn: $currentBranchOnly)
-=======
-                    Picker("分支范围", selection: $currentBranchOnly) {
-                        Text("只看当前分支").tag(true)
-                        Text("全部分支").tag(false)
-                    }
->>>>>>> 69ffaf9814ccf9dd7522e37e49d6bf47743cba05
-                    Button {
+        content
+            .navigationTitle("Actions")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarMenu }
+            .sheet(item: $selectedRun) { run in
+                NavigationStack {
+                    ActionRunDetailView(repository: repository, run: run) {
                         Task { await load() }
-                    } label: {
-                        Label("刷新", systemImage: "arrow.clockwise")
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
                 }
             }
-        }
-        .sheet(item: $selectedRun) { run in
-            NavigationStack {
-                ActionRunDetailView(repository: repository, run: run) {
-                    Task { await load() }
+            .task(id: scope) { await load() }
+            // 有运行未结束时自动刷新，方便盯着正在进行的 Actions。
+            .task(id: hasActiveRun) { await pollWhileActive() }
+    }
+
+    // MARK: 内容
+
+    @ViewBuilder
+    private var content: some View {
+        if isLoading && runs.isEmpty {
+            ProgressView("正在加载 Actions…")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let message = errorText, runs.isEmpty {
+            ContentUnavailableView(
+                "加载失败",
+                systemImage: "exclamationmark.triangle.fill",
+                description: Text(message)
+            )
+        } else if runs.isEmpty {
+            ContentUnavailableView(
+                "没有工作流运行",
+                systemImage: "bolt.horizontal.circle",
+                description: Text("这个仓库还没有 Actions 运行记录，或当前令牌没有 Actions 读取权限。")
+            )
+        } else {
+            List {
+                Section { scopeRow }
+
+                ForEach(runs) { run in
+                    Button {
+                        selectedRun = run
+                    } label: {
+                        ActionRunRow(run: run)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
+            .listStyle(.insetGrouped)
+            .refreshable { await load() }
         }
-        .task(id: currentBranchOnly) { await load() }
-        // 有运行未结束时自动刷新，方便盯着正在进行的 Actions。
-        .task(id: hasActiveRun) {
-            guard hasActiveRun else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                if Task.isCancelled { break }
-                await load()
+    }
+
+    /// 顶部信息行：仓库 / 分支范围 + 进行中指示。
+    private var scopeRow: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.triangle.branch")
+                .foregroundStyle(.secondary)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(repository.fullName)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text(scope.shortLabel)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            if hasActiveRun {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("进行中")
+                        .font(.caption2.bold())
+                        .foregroundStyle(.orange)
+                }
+            } else {
+                Text("\(runs.count) 条")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
         }
     }
+
+    private var toolbarMenu: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Menu {
+                Picker("分支范围", selection: $scope) {
+                    ForEach(BranchScope.allCases) { option in
+                        Text(option.label(currentBranch: repository.currentBranch)).tag(option)
+                    }
+                }
+                Button {
+                    Task { await load() }
+                } label: {
+                    Label("刷新", systemImage: "arrow.clockwise")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .accessibilityLabel("Actions 选项")
+        }
+    }
+
+    // MARK: 数据
 
     /// 是否有排队 / 进行中的运行。
     private var hasActiveRun: Bool {
@@ -126,7 +156,7 @@ struct ActionsView: View {
             let response = try await env.github.workflowRuns(
                 owner: repository.owner,
                 repo: repository.name,
-                branch: currentBranchOnly ? repository.currentBranch : nil
+                branch: scope == .current ? repository.currentBranch : nil
             )
             runs = response.workflowRuns
             Log.info("加载 Actions：\(repository.fullName)，\(runs.count) 条记录", .github)
@@ -138,7 +168,18 @@ struct ActionsView: View {
         }
         isLoading = false
     }
+
+    private func pollWhileActive() async {
+        guard hasActiveRun else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            if Task.isCancelled { break }
+            await load()
+        }
+    }
 }
+
+// MARK: - 列表行
 
 /// 列表里的一行运行记录。
 struct ActionRunRow: View {
@@ -159,16 +200,19 @@ struct ActionRunRow: View {
             }
 
             HStack(spacing: 8) {
-                Text(ActionFormat.statusText(for: run))
+                Text(ActionFormat.text(for: run))
                     .font(.caption.bold())
                     .foregroundStyle(ActionFormat.color(for: run))
+
                 if let branch = run.headBranch {
                     Label(branch, systemImage: "arrow.triangle.branch")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
+
                 Spacer()
+
                 Text(ActionFormat.relative(run.createdAt))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -179,7 +223,9 @@ struct ActionRunRow: View {
     }
 }
 
-/// 详情页：job / step 列表，以及重新运行与取消。
+// MARK: - 详情
+
+/// 详情页：运行信息 + job / step 状态，以及重新运行与取消。
 struct ActionRunDetailView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.dismiss) private var dismiss
@@ -195,84 +241,118 @@ struct ActionRunDetailView: View {
 
     var body: some View {
         List {
-            Section("运行信息") {
-                LabeledContent("状态", value: ActionFormat.statusText(for: run))
-                LabeledContent("事件", value: run.event ?? "未知")
-                if let branch = run.headBranch {
-                    LabeledContent("分支", value: branch)
-                }
-                if let sha = run.headSha {
-                    LabeledContent("提交", value: String(sha.prefix(7)))
-                }
-                LabeledContent("开始", value: ActionFormat.absolute(run.createdAt))
-            }
-
-            if let errorText {
-                Section { Text(errorText).foregroundStyle(.red).font(.footnote) }
-            }
+            runSection
+            errorSection
 
             if isLoading {
-                Section { HStack { ProgressView(); Text("正在加载任务…") } }
+                Section { HStack(spacing: 8) { ProgressView(); Text("正在加载任务…") } }
             } else if jobs.isEmpty {
                 Section { Text("没有任务信息。").foregroundStyle(.secondary) }
             } else {
-                ForEach(jobs) { job in
-                    Section {
-                        ForEach(job.steps ?? []) { step in
-                            HStack(spacing: 8) {
-                                Image(systemName: ActionFormat.stepSymbol(step.conclusion, status: step.status))
-                                    .foregroundStyle(ActionFormat.stepColor(step.conclusion, status: step.status))
-                                Text(step.name)
-                                    .font(.footnote)
-                                Spacer()
-                                Text(ActionFormat.stepText(step.conclusion, status: step.status))
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    } header: {
-                        HStack(spacing: 6) {
-                            Image(systemName: ActionFormat.jobSymbol(job))
-                                .foregroundStyle(ActionFormat.jobColor(job))
-                            Text(job.name)
-                        }
-                    }
-                }
+                ForEach(jobs) { job in jobSection(job) }
             }
         }
         .listStyle(.insetGrouped)
         .navigationTitle("运行 #\(run.runNumber ?? run.id)")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("关闭") { dismiss() }
-            }
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    Task { await rerun() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .disabled(working)
-
-                Button(role: .destructive) {
-                    Task { await cancel() }
-                } label: {
-                    Image(systemName: "stop.circle")
-                }
-                .disabled(working || run.status != "in_progress" && run.status != "queued")
-            }
-        }
+        .toolbar { toolbarItems }
         .task { await loadJobs() }
         .refreshable { await loadJobs() }
-        .task(id: ActionFormat.isActive(status: run.status) || jobs.contains { ActionFormat.isActive(status: $0.status) }) {
-            guard ActionFormat.isActive(status: run.status) || jobs.contains(where: { ActionFormat.isActive(status: $0.status) }) else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 10_000_000_000)
-                if Task.isCancelled { break }
-                await loadJobs()
+        .task(id: hasActiveJob) { await pollWhileActive() }
+    }
+
+    // MARK: 内容
+
+    private var runSection: some View {
+        Section("运行信息") {
+            LabeledContent("状态", value: ActionFormat.text(for: run))
+            LabeledContent("事件", value: run.event ?? "未知")
+            if let branch = run.headBranch {
+                LabeledContent("分支", value: branch)
+            }
+            if let sha = run.headSha {
+                LabeledContent("提交", value: String(sha.prefix(7)))
+            }
+            LabeledContent("开始", value: ActionFormat.absolute(run.createdAt))
+        }
+    }
+
+    @ViewBuilder
+    private var errorSection: some View {
+        if let message = errorText {
+            Section {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
             }
         }
+    }
+
+    private func jobSection(_ job: GitHubWorkflowJob) -> some View {
+        Section {
+            if let steps = job.steps, !steps.isEmpty {
+                ForEach(steps) { step in
+                    stepRow(step)
+                }
+            } else {
+                Text("没有步骤信息")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack(spacing: 6) {
+                Image(systemName: ActionFormat.symbol(conclusion: job.conclusion, status: job.status))
+                    .foregroundStyle(ActionFormat.color(conclusion: job.conclusion, status: job.status))
+                Text(job.name)
+            }
+        }
+    }
+
+    private func stepRow(_ step: GitHubWorkflowStep) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: ActionFormat.symbol(conclusion: step.conclusion, status: step.status))
+                .foregroundStyle(ActionFormat.color(conclusion: step.conclusion, status: step.status))
+            Text(step.name)
+                .font(.footnote)
+            Spacer()
+            Text(ActionFormat.text(conclusion: step.conclusion, status: step.status))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var toolbarItems: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("关闭") { dismiss() }
+        }
+
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            Button {
+                Task { await rerun() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .disabled(working)
+            .accessibilityLabel("重新运行")
+
+            Button(role: .destructive) {
+                Task { await cancel() }
+            } label: {
+                Image(systemName: "stop.circle")
+            }
+            .disabled(working || !canCancel)
+            .accessibilityLabel("取消运行")
+        }
+    }
+
+    // MARK: 数据
+
+    private var canCancel: Bool {
+        run.status == "in_progress" || run.status == "queued"
+    }
+
+    private var hasActiveJob: Bool {
+        ActionFormat.isActive(status: run.status) || jobs.contains { ActionFormat.isActive(status: $0.status) }
     }
 
     private func loadJobs() async {
@@ -291,6 +371,15 @@ struct ActionRunDetailView: View {
             }
         }
         isLoading = false
+    }
+
+    private func pollWhileActive() async {
+        guard hasActiveJob else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            if Task.isCancelled { break }
+            await loadJobs()
+        }
     }
 
     private func rerun() async {
@@ -322,10 +411,14 @@ struct ActionRunDetailView: View {
     }
 }
 
-/// Actions 状态文案与配色。
+// MARK: - 文案与配色
+
+/// Actions 的状态文案、图标、配色与时间格式。
 enum ActionFormat {
 
-    static func statusText(for run: GitHubWorkflowRun) -> String {
+    // MARK: 运行
+
+    static func text(for run: GitHubWorkflowRun) -> String {
         text(conclusion: run.conclusion, status: run.status)
     }
 
@@ -345,6 +438,8 @@ enum ActionFormat {
         }
     }
 
+    // MARK: 通用状态
+
     static func text(conclusion: String?, status: String?) -> String {
         switch conclusion {
         case "success": return "成功"
@@ -359,12 +454,12 @@ enum ActionFormat {
         case let value?: return value
         case nil: break
         }
+
         switch status {
         case "in_progress": return "进行中"
-        case "queued": return "排队中"
+        case "queued", "pending": return "排队中"
         case "waiting": return "等待中"
         case "requested": return "已请求"
-        case "pending": return "等待中"
         case "completed": return "已完成"
         case let value?: return value
         default: return "未知"
@@ -379,6 +474,7 @@ enum ActionFormat {
         case "cancelled", "skipped", "neutral", "stale": return .secondary
         default: break
         }
+
         switch status {
         case "in_progress": return .blue
         case "queued", "waiting", "requested", "pending": return .orange
@@ -395,6 +491,7 @@ enum ActionFormat {
         case "timed_out", "action_required": return "exclamationmark.triangle.fill"
         default: break
         }
+
         switch status {
         case "in_progress": return "arrow.triangle.2.circlepath"
         case "queued", "waiting", "requested", "pending": return "clock"
@@ -402,25 +499,7 @@ enum ActionFormat {
         }
     }
 
-    static func jobColor(_ job: GitHubWorkflowJob) -> Color {
-        color(conclusion: job.conclusion, status: job.status)
-    }
-
-    static func jobSymbol(_ job: GitHubWorkflowJob) -> String {
-        symbol(conclusion: job.conclusion, status: job.status)
-    }
-
-    static func stepColor(_ conclusion: String?, status: String?) -> Color {
-        color(conclusion: conclusion, status: status)
-    }
-
-    static func stepSymbol(_ conclusion: String?, status: String?) -> String {
-        symbol(conclusion: conclusion, status: status)
-    }
-
-    static func stepText(_ conclusion: String?, status: String?) -> String {
-        text(conclusion: conclusion, status: status)
-    }
+    // MARK: 时间
 
     /// "3 分钟前" 之类的相对时间。
     static func relative(_ iso: String?) -> String {
@@ -439,7 +518,7 @@ enum ActionFormat {
 
     private static func parse(_ iso: String?) -> Date? {
         guard let iso, !iso.isEmpty else { return nil }
-        return isoFormatter.date(from: iso) ?? fallbackFormatter.date(from: iso)
+        return isoFormatter.date(from: iso) ?? fractionalFormatter.date(from: iso)
     }
 
     private static let isoFormatter: ISO8601DateFormatter = {
@@ -448,7 +527,7 @@ enum ActionFormat {
         return formatter
     }()
 
-    private static let fallbackFormatter: ISO8601DateFormatter = {
+    private static let fractionalFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return formatter
