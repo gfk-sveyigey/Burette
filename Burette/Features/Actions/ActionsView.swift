@@ -321,6 +321,7 @@ struct ActionRunDetailView: View {
         }
     }
 
+    @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
         ToolbarItem(placement: .cancellationAction) {
             Button("关闭") { dismiss() }
