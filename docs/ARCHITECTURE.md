@@ -49,7 +49,7 @@
 
 ### 3.2 diff 解析与应用
 
-`DiffParser` 把 AI 返回的文本解析为 `[FilePatch]`，逐文件包含若干 `DiffHunk`。
+`DiffExtractor` 会合并回复里**所有**包含 diff 的围栏代码块（模型常把每个文件放进各自的代码块，只取第一块会导致多文件改动只能应用一个文件）。`DiffParser` 把 AI 返回的文本解析为 `[FilePatch]`，逐文件包含若干 `DiffHunk`；解析遇到新的文件头（`diff --git` / `--- x` + `+++ y`）会收尾上一个文件，即使模型给的行数有偏差也不会把后续文件吞掉。
 `PatchApplier` 采用「上下文匹配 + 行偏移累积」把 hunk 写回原文：
 
 - 只按 `@@` 里的行号定位，同时校验上下文行，避免错位覆盖
@@ -90,7 +90,7 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 每个仓库可保存多条对话（Conversation），支持新建、切换、重命名、删除与中断：
 
 - ChatView 顶栏左侧进入对话列表；AppEnvironment 维护 conversationsByRepository 与 selectedConversationIDs。
-- 发送时把整个项目文件作为上下文（contextPaths 非空时只取指定文件），依次经过「整理上下文 → 请求模型 → 解析 diff」，agentStatus 实时暴露给界面，由 AgentRunView 以步骤卡片呈现，使过程更像一次 agent 任务执行。
+- 发送时把整个项目文件作为上下文（contextPaths 非空时只取指定文件），依次经过「整理上下文 → 请求模型 → 解析 diff」，agentStatus 实时暴露给界面，由 AgentRunView 以步骤卡片呈现，使过程更像一次 agent 任务执行。AI 配置里的「模型强度」映射到接口的 reasoning_effort（low / medium / high），选「默认」时不发送该参数以兼容不支持的模型。
 - send 为非阻塞：内部持有 sendTask，再次发送或点击停止键会调用 cancelSend() 取消在途请求，取消不写入错误提示。
 - AI 返回的 diff 会自动应用到工作区（agentStatus 走完后由 AppEnvironment.apply 写入），界面只展示说明文字与结果徽标（applied / partial / failed，只有真正写入工作区才显示「已应用」）；气泡正文用 DiffExtractor.prose 去掉 diff 原文。
 - 稳定性：请求期间用 BackgroundTask 申请后台执行时间，退到后台 / 锁屏时尽量跑完；上下文按字符预算裁剪（PromptBuilder.contextFiles，超出时优先相关文件并截断），历史只带最近 12 条；AIClient 最多重试 4 次并指数退避。

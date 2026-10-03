@@ -92,21 +92,20 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
             }
 
-            Section("诊断") {
+            Section {
                 NavigationLink {
                     LogsView()
                 } label: {
                     accountLabel("运行日志", systemImage: "doc.text.magnifyingglass")
                 }
-            }
-
-            Section {
+            } header: {
+                Text("诊断")
+            } footer: {
                 Text(versionText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .center)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
+                    .padding(.top, 2)
             }
         }
         .listStyle(.insetGrouped)
@@ -164,34 +163,47 @@ struct SettingsView: View {
         }
     }
 
+    /// 模型 + 强度 + 地址的副标题。
+    private func subtitle(for config: AIProviderConfig) -> String {
+        var parts = [config.model]
+        if let effort = config.reasoningEffort, let label = AIProviderConfig.strengthLabel(for: effort) {
+            parts.append("强度 \(label)")
+        }
+        parts.append(config.baseURL)
+        return parts.joined(separator: " · ")
+    }
+
     @ViewBuilder
     private func configRow(_ config: AIProviderConfig) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
+        HStack(spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(config.name)
                     .foregroundStyle(.primary)
-                Spacer()
-                if config.id == env.activeAIConfig?.id {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.tint)
+                Text(subtitle(for: config))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                if checking == config.id {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("检测中…")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } else if let result = checkResults[config.id] {
+                    Text(result)
+                        .font(.caption2)
+                        .foregroundStyle(result.hasPrefix("可用") ? Color.green : Color.red)
                 }
             }
-            Text("\(config.model) · \(config.baseURL)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
 
-            if checking == config.id {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.mini)
-                    Text("检测中…")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            } else if let result = checkResults[config.id] {
-                Text(result)
-                    .font(.caption2)
-                    .foregroundStyle(result.hasPrefix("可用") ? Color.green : Color.red)
+            Spacer(minLength: 8)
+
+            // 选中标记相对整行垂直居中（不跟随第一行文字）。
+            if config.id == env.activeAIConfig?.id {
+                Image(systemName: "checkmark.circle.fill")
+                    .foregroundStyle(.tint)
             }
         }
         .padding(.vertical, 2)
@@ -251,27 +263,50 @@ struct AIProviderEditorView: View {
         _draft = State(initialValue: config)
     }
 
+    /// 模型强度（reasoning_effort）绑定，可空表示「默认」。
+    private var strengthBinding: Binding<String?> {
+        Binding(
+            get: { draft.reasoningEffort },
+            set: { draft.reasoningEffort = $0 }
+        )
+    }
+
     var body: some View {
         NavigationStack {
             Form {
-                TextField("名称", text: $draft.name)
-                TextField("Base URL", text: $draft.baseURL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                    .keyboardType(.URL)
-                TextField("模型名", text: $draft.model)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SecureField("API Key（留空表示不修改）", text: $apiKey)
-                TextField(
-                    "补充说明（可选）",
-                    text: Binding(
-                        get: { draft.extraInstructions ?? "" },
-                        set: { draft.extraInstructions = $0.isEmpty ? nil : $0 }
-                    ),
-                    axis: .vertical
-                )
-                .lineLimit(1...4)
+                Section("接口") {
+                    TextField("名称", text: $draft.name)
+                    TextField("Base URL", text: $draft.baseURL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .keyboardType(.URL)
+                    TextField("模型名", text: $draft.model)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("API Key（留空表示不修改）", text: $apiKey)
+                }
+
+                Section {
+                    Picker("模型强度", selection: strengthBinding) {
+                        ForEach(AIProviderConfig.strengthOptions) { option in
+                            Text(option.label).tag(option.value)
+                        }
+                    }
+                } footer: {
+                    Text("强度对应接口的 reasoning_effort 参数；「默认」表示不发送，兼容不支持该参数的模型。")
+                }
+
+                Section("补充说明（可选）") {
+                    TextField(
+                        "追加给模型的仓库级约定",
+                        text: Binding(
+                            get: { draft.extraInstructions ?? "" },
+                            set: { draft.extraInstructions = $0.isEmpty ? nil : $0 }
+                        ),
+                        axis: .vertical
+                    )
+                    .lineLimit(1...4)
+                }
             }
             .navigationTitle("AI 配置")
             .navigationBarTitleDisplayMode(.inline)

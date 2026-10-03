@@ -65,37 +65,41 @@ struct ChatView: View {
 
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        if messages.isEmpty && !env.isSending {
-                            emptyState
-                        }
+                // 用 GeometryReader 让内容至少撑满整个可视区域，
+                // 这样点击最后一条消息下方的空白处也能收回键盘。
+                GeometryReader { geo in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            if messages.isEmpty && !env.isSending {
+                                emptyState
+                            }
 
-                        ForEach(messages) { message in
-                            MessageBubble(message: message)
-                                .id(message.id)
-                        }
+                            ForEach(messages) { message in
+                                MessageBubble(message: message)
+                                    .id(message.id)
+                            }
 
-                        if env.isSending {
-                            AgentRunView(status: env.agentStatus, startedAt: env.agentStartedAt)
-                                .id(Self.thinkingID)
+                            if env.isSending {
+                                AgentRunView(status: env.agentStatus, startedAt: env.agentStartedAt)
+                                    .id(Self.thinkingID)
+                            }
                         }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .frame(maxWidth: .infinity, minHeight: geo.size.height, alignment: .top)
+                        .contentShape(Rectangle())
+                        .onTapGesture { isInputFocused = false }
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity)
-                    .contentShape(Rectangle())
-                    .onTapGesture { isInputFocused = false }
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .onChange(of: messages.count) { _, _ in
-                    scrollToBottom(proxy, messages: messages)
-                }
-                .onChange(of: env.isSending) { _, _ in
-                    scrollToBottom(proxy, messages: messages)
-                }
-                .onChange(of: env.agentStatus) { _, _ in
-                    if env.isSending { scrollToBottom(proxy, messages: messages) }
+                    .scrollDismissesKeyboard(.interactively)
+                    .onChange(of: messages.count) { _, _ in
+                        scrollToBottom(proxy, messages: messages)
+                    }
+                    .onChange(of: env.isSending) { _, _ in
+                        scrollToBottom(proxy, messages: messages)
+                    }
+                    .onChange(of: env.agentStatus) { _, _ in
+                        if env.isSending { scrollToBottom(proxy, messages: messages) }
+                    }
                 }
             }
 
