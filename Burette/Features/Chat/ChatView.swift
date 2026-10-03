@@ -100,6 +100,14 @@ struct ChatView: View {
                         .onTapGesture { isInputFocused = false }
                     }
                     .scrollDismissesKeyboard(.interactively)
+                    // 进入页面时从最底部开始显示。原来只有 messages.count 变化才滚动，
+                    // 进入时消息已经存在，不会触发任何滚动，于是停在顶部看不到最新消息。
+                    .defaultScrollAnchor(.bottom)
+                    .onChange(of: env.selectedRepositoryID) { _, _ in
+                        // 切换仓库后消息整体替换；两个仓库消息数相同时
+                        // messages.count 不会变化，需要单独滚一次。
+                        scrollToBottom(proxy, messages: messages)
+                    }
                     .onChange(of: messages.count) { _, _ in
                         scrollToBottom(proxy, messages: messages)
                     }
@@ -135,7 +143,7 @@ struct ChatView: View {
                 .foregroundStyle(.secondary)
             Text("Burette Agent")
                 .font(.headline)
-            Text("描述你想怎么改。Agent 会读取整个项目的文件、请求模型，并把改动自动应用到工作区，完成后通知你。")
+            Text("描述你想怎么改。Agent 会先拿到文件树，再按需读取相关文件，并把改动自动应用到工作区，完成后通知你。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

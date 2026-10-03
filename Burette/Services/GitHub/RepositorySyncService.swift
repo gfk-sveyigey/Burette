@@ -20,6 +20,31 @@ struct RepositorySyncService: Sendable {
         return Self.binaryExtensions.contains(ext)
     }
 
+    /// 逐目录遍历树，用于 GitHub 截断递归结果（超大仓库）时补全文件列表。
+    private static func allEntries(
+        client: GitHubClient,
+        owner: String,
+        repo: String,
+        treeSHA: String
+    ) async throws -> [GitHubTreeDetail.Entry] {
+        var result: [GitHubTreeDetail.Entry] = []
+        var queue: [String] = [treeSHA]
+        var visited = Set<String>()
+
+        while let sha = queue.popLast() {
+            guard visited.insert(sha).inserted else { continue }
+            let node = try await client.tree(owner: owner, repo: repo, sha: sha, recursive: false)
+            for entry in node.tree {
+                if entry.type == "tree" {
+                    queue.append(entry.sha)
+                } else {
+                    result.append(entry)
+                }
+            }
+        }
+        return result
+    }
+
     /// 拉取指定分支到工作区，返回 base commit SHA 与写入的文件数。
     @discardableResult
     func pull(
@@ -34,7 +59,19 @@ struct RepositorySyncService: Sendable {
         let ref = try await client.ref(owner: owner, repo: repo, branch: targetBranch)
         let commitSHA = ref.object.sha
         let detail = try await client.commitDetail(owner: owner, repo: repo, sha: commitSHA)
-        let tree = try await client.tree(owner: owner, repo: repo, sha: detail.tree.sha, recursive: true)
+        var tree = try await client.tree(owner: owner, repo: repo, sha: detail.tree.sha, recursive: true)
+        if tree.truncated == true {
+            // GitHub 对超大仓库的递归树会截断（超过约 10 万条 / 7MB）。递归结果不完整会把
+            // 「缺文件」直接带给 AI，因此改为逐目录遍历补全。
+            Log.warning("仓库树被 GitHub 截断，改为逐目录遍历：\(owner)/\(repo)＠\(targetBranch)", .workspace)
+            let entries = try await Self.allEntries(
+                client: client,
+                owner: owner,
+                repo: repo,
+                treeSHA: detail.tree.sha
+            )
+            tree = GitHubTreeDetail(sha: tree.sha, tree: entries, truncated: false)
+        }
 
         let blobs = tree.tree.filter { $0.type == "blob" }
         guard !blobs.isEmpty else {

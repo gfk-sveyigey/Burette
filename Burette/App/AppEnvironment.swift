@@ -524,34 +524,21 @@ final class AppEnvironment: ObservableObject {
         }
         let tree = (try? workspace.listFiles(repository: repository)) ?? []
 
-        let files: [FileContext]
-        var omittedFiles: [String] = []
-        if contextPaths.isEmpty {
-            // 未显式指定时把整个项目作为参考；预算内会包含全部文本文件。
-            let bundle = PromptBuilder.contextBundle(for: trimmed, snapshot: snapshot)
-            files = bundle.files
-            omittedFiles = bundle.omitted
-        } else {
-            files = contextPaths.compactMap { path in
+        var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
+        apiMessages.append(PromptBuilder.treeMessage(fileTree: tree))
+        // 兼容旧的显式参考文件：有的话先直接附带，省一次往返。
+        if !contextPaths.isEmpty {
+            let initial = contextPaths.compactMap { path -> FileContext? in
                 guard let content = snapshot[path] else { return nil }
                 return FileContext(path: path, content: content)
             }
-            omittedFiles = contextPaths.filter { snapshot[$0] == nil }
+            let missing = contextPaths.filter { snapshot[$0] == nil }
+            apiMessages.append(PromptBuilder.readResultMessage(requested: contextPaths, files: initial, missing: missing))
         }
-
-        let contextChars = files.reduce(0) { $0 + $1.content.count }
-        Log.debug("上下文：文件树 \(tree.count) 项，附带文件 \(files.count) 个，未附带 \(omittedFiles.count) 个，共 \(contextChars) 字", .ai)
-        if omittedFiles.isEmpty {
-            contextNotice = "已附带全部 \(files.count) 个文件"
-        } else {
-            contextNotice = "已附带 \(files.count)/\(files.count + omittedFiles.count) 个文件，其余超出体积预算未附带"
-        }
-
-        var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
-        apiMessages.append(PromptBuilder.contextMessage(fileTree: tree, files: files, omitted: omittedFiles))
         for message in history.suffix(12) where message.role != .system {
             apiMessages.append(message.apiMessage)
         }
+        Log.debug("上下文：只发送文件树 \(tree.count) 项，其余由模型按需读取", .ai)
 
         // 退到后台 / 锁屏时申请额外执行时间，尽量让请求跑完。
         let backgroundTask = BackgroundTask()
@@ -559,8 +546,51 @@ final class AppEnvironment: ObservableObject {
         defer { backgroundTask.end() }
 
         do {
-            setAgentStatus("正在请求 AI 模型…")
-            let reply = try await aiClient.complete(config: config, apiKey: apiKey, messages: apiMessages)
+            // Codex 式按需读取：模型用 <<READ: 路径>> 索取文件，App 读好后继续问，
+            // 直到模型给出 diff（或达到轮次 / 体积上限）。
+            var reply = ""
+            var readPaths = Set<String>()
+            var totalReadChars = 0
+            var stopReading = false
+            let maxRounds = 10
+
+            for round in 1...maxRounds {
+                setAgentStatus(round == 1 ? "正在请求 AI 模型…" : "正在分析（已读 \(readPaths.count) 个文件）…")
+                let output = try await aiClient.complete(config: config, apiKey: apiKey, messages: apiMessages)
+                try Task.checkCancellation()
+
+                let requests = stopReading ? [] : PromptBuilder.requestedPaths(in: output)
+                let fresh = requests.filter { !readPaths.contains($0) }
+                let outputHasDiff = Self.looksLikeDiff(output)
+
+                if fresh.isEmpty || outputHasDiff || round == maxRounds {
+                    reply = output
+                    break
+                }
+
+                let (found, missing) = Self.resolveRequestedPaths(fresh, in: tree)
+                var files: [FileContext] = []
+                for path in found {
+                    guard let content = snapshot[path] else { continue }
+                    let body = content.count > Self.readFileLimit
+                        ? String(content.prefix(Self.readFileLimit)) + "\n…（内容过长已截断）"
+                        : content
+                    files.append(FileContext(path: path, content: body))
+                    totalReadChars += body.count
+                }
+
+                apiMessages.append(AIChatMessage(role: "assistant", content: output))
+                apiMessages.append(PromptBuilder.readResultMessage(requested: fresh, files: files, missing: missing))
+                readPaths.formUnion(found)
+                readPaths.formUnion(missing)
+                Log.debug("按需读取：请求 \(fresh.count) 个，命中 \(files.count) 个，缺失 \(missing.count) 个", .ai)
+
+                if totalReadChars > Self.readBudget {
+                    stopReading = true
+                    apiMessages.append(AIChatMessage(role: "user", content: "已读取足够多的内容，请直接基于现有信息输出 unified diff，不要再请求文件。"))
+                }
+            }
+
             try Task.checkCancellation()
             setAgentStatus("正在解析改动…")
             let diffText = DiffExtractor.extract(from: reply)
@@ -612,7 +642,7 @@ final class AppEnvironment: ObservableObject {
             let message = ChatMessage(
                 id: messageID,
                 role: .assistant,
-                content: DiffExtractor.prose(from: reply),
+                content: PromptBuilder.strippingReadMarkers(DiffExtractor.prose(from: reply)),
                 patches: patches,
                 duration: elapsed,
                 applyState: applyState
@@ -637,6 +667,42 @@ final class AppEnvironment: ObservableObject {
             guard let content = snapshot[path] else { return nil }
             return FileContext(path: path, content: content)
         }
+    }
+
+    /// 判断模型回复里是否已经包含可用的 unified diff。
+    ///
+    /// 注意不能直接用 DiffExtractor.extract 是否非空：它在没有 diff 头时会把整段
+    /// 文本原样返回，会把纯文字 / <<READ>> 回复误判成 diff。
+    private static func looksLikeDiff(_ text: String) -> Bool {
+        if text.contains("@@ -") { return true }
+        return text.contains("--- ") && text.contains("+++ ")
+    }
+
+    /// 单次读取的文件体积上限（避免一个超大文件撑爆请求）。
+    private static let readFileLimit = 120_000
+
+    /// 一轮对话里按需读取的总体积上限，超过后要求模型直接给出 diff。
+    private static let readBudget = 600_000
+
+    /// 把模型请求的路径解析到文件树里的真实路径（大小写不敏感）。
+    private static func resolveRequestedPaths(
+        _ requested: [String],
+        in tree: [String]
+    ) -> (found: [String], missing: [String]) {
+        var index: [String: String] = [:]
+        for path in tree { index[path.lowercased()] = path }
+
+        var found: [String] = []
+        var missing: [String] = []
+        for raw in requested {
+            let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if let real = index[key] {
+                found.append(real)
+            } else {
+                missing.append(raw)
+            }
+        }
+        return (found, missing)
     }
 
     // MARK: - 分支
