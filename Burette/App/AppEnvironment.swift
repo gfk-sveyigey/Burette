@@ -45,6 +45,8 @@ final class AppEnvironment: ObservableObject {
 
     private let store: PersistenceStore
     private var sendTask: Task<Void, Never>?
+    /// 当前实时活动对应的仓库名（用于灵动岛展示）。
+    private var liveActivityRepository: String?
 
     // MARK: - Init
 
@@ -439,6 +441,16 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// 更新 agent 步骤，并把最新状态同步到灵动岛实时活动。
+    private func setAgentStatus(_ value: String) {
+        agentStatus = value
+        AgentLiveActivity.shared.update(
+            repository: liveActivityRepository ?? "",
+            status: value,
+            startedAt: agentStartedAt ?? Date()
+        )
+    }
+
     /// 中断正在进行的对话请求（保留已经发出的用户消息）。
     func cancelSend() {
         guard sendTask != nil || isSending else { return }
@@ -446,6 +458,9 @@ final class AppEnvironment: ObservableObject {
         sendTask = nil
         isSending = false
         agentStatus = nil
+        agentStartedAt = nil
+        AgentLiveActivity.shared.end()
+        liveActivityRepository = nil
         Log.info("已中断对话请求", .ai)
     }
 
@@ -466,10 +481,19 @@ final class AppEnvironment: ObservableObject {
         isSending = true
         let startedAt = Date()
         agentStartedAt = startedAt
+        liveActivityRepository = repository.fullName
+        // 对话进行时把进度同步到灵动岛 / 锁屏。
+        AgentLiveActivity.shared.start(
+            repository: repository.fullName,
+            status: "正在整理仓库上下文…",
+            startedAt: startedAt
+        )
         defer {
             isSending = false
             agentStatus = nil
             agentStartedAt = nil
+            AgentLiveActivity.shared.end()
+            liveActivityRepository = nil
         }
         Log.info("发送对话请求：\(repository.fullName)，\(trimmed.count) 字", .ai)
 
@@ -479,8 +503,23 @@ final class AppEnvironment: ObservableObject {
 
         let history = messages(for: repository)
 
-        agentStatus = "正在整理仓库上下文…"
-        let snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
+        setAgentStatus("正在整理仓库上下文…")
+        var snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
+        // 工作区为空（还没拉取过 / 上次拉取失败）时先自动拉一次，
+        // 否则模型只能看到空文件树，就会反过来要求用户粘贴文件内容。
+        if snapshot.isEmpty {
+            Log.warning("工作区为空，发送前自动拉取：\(repository.fullName)", .workspace)
+            setAgentStatus("正在拉取仓库文件…")
+            await clone(repository)
+            snapshot = (try? workspace.snapshot(repository: repository)) ?? [:]
+            guard !snapshot.isEmpty else {
+                agentStatus = nil
+                lastError = "工作区里没有可用文件，AI 无法读取项目。请先在「仓库」页对 \(repository.fullName) 执行一次拉取，并确认仓库不是空的。"
+                Log.error("工作区仍为空，已中止本次对话：\(repository.fullName)", .workspace)
+                return
+            }
+            setAgentStatus("正在整理仓库上下文…")
+        }
         let tree = (try? workspace.listFiles(repository: repository)) ?? []
 
         let files: [FileContext]
@@ -509,10 +548,10 @@ final class AppEnvironment: ObservableObject {
         defer { backgroundTask.end() }
 
         do {
-            agentStatus = "正在请求 AI 模型…"
+            setAgentStatus("正在请求 AI 模型…")
             let reply = try await aiClient.complete(config: config, apiKey: apiKey, messages: apiMessages)
             try Task.checkCancellation()
-            agentStatus = "正在解析改动…"
+            setAgentStatus("正在解析改动…")
             let diffText = DiffExtractor.extract(from: reply)
             let patches = try? DiffParser.parse(diffText)
 
@@ -526,7 +565,7 @@ final class AppEnvironment: ObservableObject {
 
                 // 兜底：diff 应用不了的，请模型直接给出修改后的完整文件内容。
                 if !outcome.isComplete, !outcome.failedPaths.isEmpty {
-                    agentStatus = "正在修复无法应用的改动…"
+                    setAgentStatus("正在修复无法应用的改动…")
                     let repaired = await repairFiles(
                         outcome.failedPaths,
                         instruction: trimmed,

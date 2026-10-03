@@ -25,6 +25,9 @@
 	<!-- 允许通过「文件」App / Finder 访问沙盒内的工作区 -->
 	<key>UIFileSharingEnabled</key>
 	<true/>
+	<!-- 对话进行时在灵动岛 / 锁屏展示实时进度 -->
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

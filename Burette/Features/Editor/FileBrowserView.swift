@@ -24,6 +24,26 @@ struct FileBrowserView: View {
         .listStyle(.insetGrouped)
         .navigationTitle(repository.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                NavigationLink {
+                    ActionsView(repository: repository)
+                } label: {
+                    Image(systemName: "bolt.horizontal.circle")
+                }
+                .accessibilityLabel("查看 Actions")
+
+                Button {
+                    Task {
+                        await env.clone(repository)
+                        load()
+                    }
+                } label: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .accessibilityLabel("拉取最新代码")
+            }
+        }
         .task { load() }
     }
 

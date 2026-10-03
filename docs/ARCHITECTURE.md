@@ -93,10 +93,28 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 - 发送时把整个项目文件作为上下文（contextPaths 非空时只取指定文件），依次经过「整理上下文 → 请求模型 → 解析 diff」，agentStatus 实时暴露给界面，由 AgentRunView 以步骤卡片呈现，使过程更像一次 agent 任务执行。AI 配置里的「模型强度」映射到接口的 reasoning_effort（low / medium / high），选「默认」时不发送该参数以兼容不支持的模型。
 - send 为非阻塞：内部持有 sendTask，再次发送或点击停止键会调用 cancelSend() 取消在途请求，取消不写入错误提示。
 - AI 返回的 diff 会自动应用到工作区（agentStatus 走完后由 AppEnvironment.apply 写入），界面只展示说明文字与结果徽标（applied / partial / failed，只有真正写入工作区才显示「已应用」）；气泡正文用 DiffExtractor.prose 去掉 diff 原文。
+- 工作区为空（未拉取 / 拉取失败）时，发送前会自动拉取一次；仍为空则直接提示用户去「仓库」页拉取，而不是把空文件树丢给模型让它要求用户粘贴代码。读取工作区时单个非 UTF-8 文件会按 lossy 解码跳过，不会让整份快照失败。
 - 稳定性：请求期间用 BackgroundTask 申请后台执行时间，退到后台 / 锁屏时尽量跑完；上下文按字符预算裁剪（PromptBuilder.contextFiles，超出时优先相关文件并截断），历史只带最近 12 条；AIClient 最多重试 4 次并指数退避。
 - 界面用 agentStartedAt 实时显示已用时长（统一中文单位，如「45秒」「1分23秒」），回复气泡展示最终用时。
 - 取消类错误（URLError.cancelled / CancellationError）统一由 Support/Cancellation.swift 识别，只记调试日志，不弹错。
 - 改动页用 LineDiff + DiffView 以 GitHub 风格展示：旧/新行号 + 增删颜色 + 统计条；PatchApplier 逐级放宽定位：精确行号 → 全文件内容搜索 → 忽略首尾空白 → fuzz（保留删除行、丢弃首尾上下文）→ 已是改动后状态则跳过 → 整文件重写；若声明的文件里定位不到，AppEnvironment.resolvedPatch 会在工作区中寻找唯一匹配的文件来纠正路径；仍无法应用的，performSend 会再请模型直接返回完整文件内容作为兜底。
+
+### 3.8 GitHub Actions
+
+进入仓库后的文件页顶栏可打开 Actions，查看该仓库的 workflow 运行记录：
+
+- \`GitHubClient.workflowRuns / workflowRun / workflowJobs / rerunWorkflow / cancelWorkflow\` 封装 \`/repos/{owner}/{repo}/actions/*\`
+- 列表展示状态、分支、运行号与相对时间，可切换「只看当前分支」
+- 详情页展示 job / step 状态，并支持重新运行与取消（需要 PAT 具备 Actions 读 / 写权限）
+
+### 3.9 实时活动（灵动岛）
+
+对话进行时通过 ActivityKit 把进度同步到灵动岛 / 锁屏：
+
+- \`Shared/AgentActivityAttributes.swift\` 同时编译进 App 与 \`BuretteWidget\` 扩展（同名类型才能匹配）
+- \`AppEnvironment\` 在 performSend 开始时 \`AgentLiveActivity.start\`，每次 \`setAgentStatus\` 更新状态，结束 / 取消时 \`end\`
+- 展示当前步骤（如「正在请求 AI 模型…」）与已用时长；Widget 用 \`Text(date, style: .timer)\` 自动走秒
+- CI 的无签名构建也会编译并嵌入该扩展
 
 ## 4. 并发约定
 

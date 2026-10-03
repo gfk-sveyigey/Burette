@@ -78,6 +78,17 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
     let fileURL: URL
     let stderrURL: URL
     private let maxFileSize = 1_024_000
+    /// 轮转保留的历史文件数量（burette.1.log … burette.N.log）。
+    private let maxRotatedGenerations = 3
+
+    /// 第 generation 代历史日志的路径；generation 为 0 时即当前文件。
+    func rotatedURL(_ generation: Int) -> URL {
+        guard generation > 0 else { return fileURL }
+        return fileURL
+            .deletingPathExtension()
+            .appendingPathExtension("\(generation).log")
+    }
+
 
     private init() {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
@@ -112,8 +123,9 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
 
         let url = fileURL
         let maxSize = maxFileSize
+        let generations = maxRotatedGenerations
         fileQueue.async {
-            LogCenter.append(entry, to: url, maxSize: maxSize)
+            LogCenter.append(entry, to: url, maxSize: maxSize, generations: generations)
         }
     }
 
@@ -128,8 +140,12 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
         }
         let logURL = fileURL
         let errorURL = stderrURL
+        let generations = maxRotatedGenerations
         fileQueue.async {
             try? FileManager.default.removeItem(at: logURL)
+            for generation in 1...generations {
+                try? FileManager.default.removeItem(at: logURL.deletingPathExtension().appendingPathExtension("\(generation).log"))
+            }
             try? FileManager.default.removeItem(at: errorURL)
         }
     }
@@ -152,23 +168,69 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
         try? Data().write(to: stderrURL)
     }
 
-    /// 启动时加载最近的日志行，这样重启后也能看到上次会话（含崩溃）。
+    /// 启动时加载最近的历史日志，这样重启后也能看到上次会话（含崩溃）。
+    ///
+    /// 会按「旧 → 新」依次读取所有轮转文件与当前文件，取最后 limit 条并还原
+    /// 原来的时间/级别/分类，避免重启后丢掉大部分日志。
     private func loadHistory() {
-        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
-        let lines = text.split(separator: "\n").suffix(400)
-        let seeded = lines.map { line -> LogEntry in
-            let string = String(line)
-            let isCrash = string.contains("崩溃") || string.contains("致命错误") || string.contains("未捕获异常")
-                || string.contains("Fatal error") || string.contains("Exception")
+        var lines: [String] = []
+        for generation in stride(from: maxRotatedGenerations, through: 1, by: -1) {
+            let url = rotatedURL(generation)
+            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            lines.append(contentsOf: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
+        }
+        if let text = try? String(contentsOf: fileURL, encoding: .utf8) {
+            lines.append(contentsOf: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
+        }
+
+        let seeded = lines.suffix(limit).map { line -> LogEntry in
+            if let parsed = Self.parseLine(line) { return parsed }
+            let isCrash = line.contains("崩溃") || line.contains("致命错误") || line.contains("未捕获异常")
+                || line.contains("Fatal error") || line.contains("Exception")
             return LogEntry(
                 date: Date(),
                 level: isCrash ? .error : .info,
                 category: .app,
-                message: "[上次会话] " + string
+                message: "[上次会话] " + line
             )
         }
         storage = seeded
         entries = seeded
+    }
+
+    /// 把一行 "日期 [级别] [分类] 消息" 还原成 LogEntry；无法解析时返回 nil。
+    private static func parseLine(_ raw: String) -> LogEntry? {
+        let characters = Array(raw)
+        guard characters.count > 26 else { return nil }
+        guard let date = formatter.date(from: String(characters[0..<23])) else { return nil }
+
+        var index = 23
+        func readBracket() -> String? {
+            while index < characters.count, characters[index] == " " { index += 1 }
+            guard index < characters.count, characters[index] == "[" else { return nil }
+            index += 1
+            var value = ""
+            while index < characters.count, characters[index] != "]" {
+                value.append(characters[index])
+                index += 1
+            }
+            guard index < characters.count else { return nil }
+            index += 1
+            return value
+        }
+
+        guard let levelText = readBracket(), let categoryText = readBracket() else { return nil }
+        while index < characters.count, characters[index] == " " { index += 1 }
+        let message = String(characters[index...])
+
+        let level = LogLevel.allCases.first { $0.rawValue == levelText } ?? .info
+        let category = LogCategory.allCases.first { $0.rawValue == categoryText } ?? .app
+        return LogEntry(date: date, level: level, category: category, message: message)
+    }
+
+    /// 等待已排队的日志写入磁盘（在进入后台 / 退出时调用，避免丢日志）。
+    func flush() {
+        fileQueue.sync {}
     }
 
     // MARK: - 文件写入
@@ -184,14 +246,23 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
         "\(formatter.string(from: entry.date)) [\(entry.level.rawValue)] [\(entry.category.rawValue)] \(entry.message)\n"
     }
 
-    private static func append(_ entry: LogEntry, to url: URL, maxSize: Int) {
+    private static func append(_ entry: LogEntry, to url: URL, maxSize: Int, generations: Int) {
         let manager = FileManager.default
         if let attributes = try? manager.attributesOfItem(atPath: url.path),
            let size = attributes[.size] as? Int,
            size > maxSize {
-            let rotated = url.deletingPathExtension().appendingPathExtension("1.log")
-            try? manager.removeItem(at: rotated)
-            try? manager.moveItem(at: url, to: rotated)
+            func path(_ generation: Int) -> URL {
+                generation <= 0 ? url : url.deletingPathExtension().appendingPathExtension("\(generation).log")
+            }
+            try? manager.removeItem(at: path(generations))
+            if generations > 1 {
+                for generation in stride(from: generations - 1, through: 1, by: -1) {
+                    let source = path(generation)
+                    guard manager.fileExists(atPath: source.path) else { continue }
+                    try? manager.moveItem(at: source, to: path(generation + 1))
+                }
+            }
+            try? manager.moveItem(at: url, to: path(1))
         }
 
         let text = line(entry)

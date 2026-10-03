@@ -39,7 +39,10 @@ struct WorkspaceManager: Sendable {
     func read(repository: Repository, path: String) throws -> String? {
         let url = try fileURL(repository: repository, path: path)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        return try String(contentsOf: url, encoding: .utf8)
+        if let text = try? String(contentsOf: url, encoding: .utf8) { return text }
+        // 个别文件不是合法 UTF-8 时按 lossy 解码，避免一个文件让整个快照失败。
+        let data = try Data(contentsOf: url)
+        return String(decoding: data, as: UTF8.self)
     }
 
     func write(repository: Repository, path: String, content: String) throws {
@@ -95,11 +98,22 @@ struct WorkspaceManager: Sendable {
     /// 读取工作区所有文本文件，供 AI 上下文与改动对比使用。
     func snapshot(repository: Repository) throws -> [String: String] {
         var contents: [String: String] = [:]
+        var skipped = 0
         for path in try listFiles(repository: repository) {
-            if let text = try read(repository: repository, path: path) {
+            if let text = try? read(repository: repository, path: path) {
                 contents[path] = text
+            } else {
+                skipped += 1
             }
         }
+        if skipped > 0 {
+            Log.warning("读取工作区时有 \(skipped) 个文件被跳过", .workspace)
+        }
         return contents
+    }
+
+    /// 工作区里是否已经有文件。
+    func hasFiles(repository: Repository) -> Bool {
+        (try? listFiles(repository: repository))?.isEmpty == false
     }
 }

@@ -173,6 +173,50 @@ actor GitHubClient {
         )
     }
 
+    // MARK: - Actions
+
+    /// 列出仓库的 workflow 运行记录，可按分支过滤。
+    func workflowRuns(
+        owner: String,
+        repo: String,
+        branch: String? = nil,
+        perPage: Int = 30
+    ) async throws -> GitHubWorkflowRuns {
+        var query = [URLQueryItem(name: "per_page", value: String(perPage))]
+        if let branch, !branch.isEmpty {
+            query.append(URLQueryItem(name: "branch", value: branch))
+        }
+        return try await get("/repos/\(owner)/\(repo)/actions/runs", query: query)
+    }
+
+    func workflowRun(owner: String, repo: String, runID: Int) async throws -> GitHubWorkflowRun {
+        try await get("/repos/\(owner)/\(repo)/actions/runs/\(runID)")
+    }
+
+    func workflowJobs(owner: String, repo: String, runID: Int) async throws -> GitHubWorkflowJobs {
+        try await get("/repos/\(owner)/\(repo)/actions/runs/\(runID)/jobs")
+    }
+
+    /// 重新运行整个 workflow（需要 actions: write 权限）。
+    func rerunWorkflow(owner: String, repo: String, runID: Int) async throws {
+        _ = try await send(
+            method: "POST",
+            path: "/repos/\(owner)/\(repo)/actions/runs/\(runID)/rerun",
+            query: [],
+            body: nil
+        )
+    }
+
+    /// 取消进行中的 workflow。
+    func cancelWorkflow(owner: String, repo: String, runID: Int) async throws {
+        _ = try await send(
+            method: "POST",
+            path: "/repos/\(owner)/\(repo)/actions/runs/\(runID)/cancel",
+            query: [],
+            body: nil
+        )
+    }
+
     // MARK: - 传输层
 
     private func get<T: Decodable>(_ path: String, query: [URLQueryItem] = []) async throws -> T {
