@@ -80,7 +80,7 @@ struct ChatView: View {
                             }
 
                             if env.isSending {
-                                AgentRunView(status: env.agentStatus, startedAt: env.agentStartedAt)
+                                AgentRunView(status: env.agentStatus, steps: env.agentSteps, startedAt: env.agentStartedAt)
                                     .id(Self.thinkingID)
                             }
                         }
@@ -349,19 +349,11 @@ struct ConversationListView: View {
 
 // MARK: - Agent 运行状态
 
-/// 对话进行中展示的 agent 步骤卡片，让过程看起来像一次任务执行而不是单纯聊天。
+/// 对话进行中展示的 agent 执行卡片：像 Codex 一样列出正在做/已完成的每一步。
 struct AgentRunView: View {
     let status: String?
+    let steps: [String]
     let startedAt: Date?
-
-    private static let steps = ["读取工作区", "请求模型", "解析改动"]
-
-    private var currentStep: Int {
-        guard let status else { return 0 }
-        if status.contains("解析") || status.contains("修复") { return 2 }
-        if status.contains("模型") { return 1 }
-        return 0
-    }
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
@@ -372,6 +364,19 @@ struct AgentRunView: View {
     private func elapsed(at date: Date) -> TimeInterval {
         guard let startedAt else { return 0 }
         return max(0, date.timeIntervalSince(startedAt))
+    }
+
+    private struct Step: Identifiable {
+        let id: Int
+        let text: String
+        let isCurrent: Bool
+    }
+
+    private var visibleSteps: [Step] {
+        let total = steps.count
+        return Array(steps.enumerated()).suffix(8).map {
+            Step(id: $0.offset, text: $0.element, isCurrent: $0.offset == total - 1)
+        }
     }
 
     private func card(elapsed: TimeInterval) -> some View {
@@ -387,31 +392,32 @@ struct AgentRunView: View {
             }
             .foregroundStyle(.secondary)
 
-            // 实时的具体进度，避免提示看起来一直停在同一句。
-            Text(status ?? "准备中…")
-                .font(.footnote)
-                .foregroundStyle(.primary)
-                .lineLimit(2)
+            if visibleSteps.isEmpty {
+                Text(status ?? "准备中…")
+                    .font(.footnote)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+            } else {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(visibleSteps) { item in
+                        HStack(alignment: .center, spacing: 8) {
+                            Group {
+                                if item.isCurrent {
+                                    ProgressView().controlSize(.mini)
+                                } else {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .frame(width: 16, alignment: .center)
 
-            ForEach(Array(Self.steps.enumerated()), id: \.offset) { index, step in
-                HStack(spacing: 8) {
-                    Group {
-                        if index < currentStep {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(Color.green)
-                        } else if index == currentStep {
-                            Image(systemName: "circle.fill")
-                                .foregroundStyle(Color.accentColor)
-                        } else {
-                            Image(systemName: "circle")
-                                .foregroundStyle(Color.secondary)
+                            Text(item.text)
+                                .font(.footnote)
+                                .foregroundStyle(item.isCurrent ? Color.primary : Color.secondary)
+                                .lineLimit(2)
                         }
                     }
-                    .font(.footnote)
-
-                    Text(step)
-                        .font(.footnote)
-                        .foregroundStyle(index <= currentStep ? Color.primary : Color.secondary)
                 }
             }
         }

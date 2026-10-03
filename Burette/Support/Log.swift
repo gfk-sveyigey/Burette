@@ -60,6 +60,23 @@ struct LogEntry: Identifiable, Hashable {
     let message: String
 }
 
+/// 日志清理方式：按条数或按天数，两者互斥。
+enum LogCleanupMode: String, CaseIterable, Identifiable, Hashable {
+    /// 只按条数上限清理。
+    case entries
+    /// 只按保留天数清理。
+    case days
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .entries: return "按条数"
+        case .days: return "按天数"
+        }
+    }
+}
+
 /// 内存 + 文件的日志中心。
 ///
 /// - 内存里保留最近 maxEntries 条（可在「运行日志」页调整），供展示。
@@ -72,23 +89,26 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
 
     /// 界面可调的日志保留设置选项。
     enum Cleanup {
-        /// 内存里最多保留的日志条数选项。
-        static let entriesOptions = [200, 500, 800, 2_000, 5_000]
-        /// 保留天数选项；0 表示永久保留。
-        static let daysOptions = [0, 1, 3, 7, 30]
+        /// 按条数保留时的选项；0 表示无限条。
+        static let entriesOptions = [200, 500, 800, 2_000, 5_000, 0]
+        /// 按天数保留时的选项；0 表示永久保留。
+        static let daysOptions = [1, 3, 7, 30, 0]
 
-        static func entriesLabel(_ value: Int) -> String { "\(value) 条" }
+        static func entriesLabel(_ value: Int) -> String { value == 0 ? "无限条" : "\(value) 条" }
         static func daysLabel(_ value: Int) -> String { value == 0 ? "永久" : "\(value) 天" }
     }
 
     private enum Keys {
+        static let cleanupMode = "log.cleanupMode"
         static let maxEntries = "log.maxEntries"
         static let retentionDays = "log.retentionDays"
     }
 
-    /// 内存里保留的最大条数（可调）。
+    /// 当前清理方式；只按选中的这一种生效。
+    @Published private(set) var cleanupMode: LogCleanupMode
+    /// 按条数保留时的上限；0 表示无限（可调）。
     @Published private(set) var maxEntries: Int
-    /// 日志保留天数；0 表示永久（可调）。
+    /// 按天数保留时的天数；0 表示永久（可调）。
     @Published private(set) var retentionDays: Int
 
     private let lock = NSLock()
@@ -119,8 +139,9 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
         stderrURL = directory.appendingPathComponent("stderr.log")
 
         let defaults = UserDefaults.standard
+        cleanupMode = (defaults.string(forKey: Keys.cleanupMode).flatMap(LogCleanupMode.init(rawValue:))) ?? .entries
         maxEntries = defaults.object(forKey: Keys.maxEntries) as? Int ?? 800
-        retentionDays = defaults.object(forKey: Keys.retentionDays) as? Int ?? 0
+        retentionDays = defaults.object(forKey: Keys.retentionDays) as? Int ?? 7
 
         mergePreviousCrash()
         loadHistory()
@@ -131,7 +152,7 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
 
         lock.lock()
         storage.append(entry)
-        if storage.count > maxEntries {
+        if cleanupMode == .entries, maxEntries > 0, storage.count > maxEntries {
             storage.removeFirst(storage.count - maxEntries)
         }
         let snapshot = storage
@@ -164,23 +185,31 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
         }
     }
 
-    /// 修改日志清理设置并立即生效。
-    func updateCleanup(maxEntries newMaxEntries: Int, retentionDays newRetentionDays: Int) {
+    /// 修改日志清理设置并立即生效。两种方式互斥，只按选中的一种清理。
+    func updateCleanup(mode: LogCleanupMode, maxEntries newMaxEntries: Int, retentionDays newRetentionDays: Int) {
+        cleanupMode = mode
         maxEntries = newMaxEntries
         retentionDays = newRetentionDays
+        UserDefaults.standard.set(mode.rawValue, forKey: Keys.cleanupMode)
         UserDefaults.standard.set(newMaxEntries, forKey: Keys.maxEntries)
         UserDefaults.standard.set(newRetentionDays, forKey: Keys.retentionDays)
-        Log.info("更新日志清理设置：最多 \(newMaxEntries) 条，保留 \(newRetentionDays == 0 ? "永久" : "\(newRetentionDays) 天")", .app)
+        let rule = mode == .entries
+            ? Cleanup.entriesLabel(newMaxEntries)
+            : Cleanup.daysLabel(newRetentionDays)
+        Log.info("更新日志清理设置：\(mode.label)（\(rule)）", .app)
         applyCleanup()
     }
 
     /// 立即按当前设置清理内存与磁盘日志。
     func applyCleanup() {
         lock.lock()
-        if storage.count > maxEntries {
-            storage.removeFirst(storage.count - maxEntries)
-        }
-        if retentionDays > 0 {
+        if cleanupMode == .entries {
+            // 按条数：0 表示无限，不清。
+            if maxEntries > 0, storage.count > maxEntries {
+                storage.removeFirst(storage.count - maxEntries)
+            }
+        } else if retentionDays > 0 {
+            // 按天数：0 表示永久，不清。
             let cutoff = Date().addingTimeInterval(-Double(retentionDays) * 86_400)
             storage.removeAll { $0.date < cutoff }
         }
@@ -243,7 +272,8 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
             lines.append(contentsOf: text.split(separator: "\n", omittingEmptySubsequences: true).map(String.init))
         }
 
-        var seeded = lines.suffix(maxEntries).map { line -> LogEntry in
+        let cap = (cleanupMode == .entries && maxEntries > 0) ? maxEntries : lines.count
+        var seeded = lines.suffix(cap).map { line -> LogEntry in
             if let parsed = Self.parseLine(line) { return parsed }
             let isCrash = line.contains("崩溃") || line.contains("致命错误") || line.contains("未捕获异常")
                 || line.contains("Fatal error") || line.contains("Exception")
@@ -254,7 +284,7 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
                 message: "[上次会话] " + line
             )
         }
-        if retentionDays > 0 {
+        if cleanupMode == .days, retentionDays > 0 {
             let cutoff = Date().addingTimeInterval(-Double(retentionDays) * 86_400)
             seeded.removeAll { $0.date < cutoff }
         }
