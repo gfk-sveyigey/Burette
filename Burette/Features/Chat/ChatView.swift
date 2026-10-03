@@ -80,7 +80,7 @@ struct ChatView: View {
                             }
 
                             if env.isSending {
-                                AgentRunView(status: env.agentStatus, steps: env.agentSteps, startedAt: env.agentStartedAt)
+                                AgentRunView(status: env.agentStatus, steps: env.agentSteps, stream: env.agentStream, startedAt: env.agentStartedAt)
                                     .id(Self.thinkingID)
                             }
                         }
@@ -353,6 +353,7 @@ struct ConversationListView: View {
 struct AgentRunView: View {
     let status: String?
     let steps: [String]
+    let stream: String
     let startedAt: Date?
 
     var body: some View {
@@ -419,6 +420,17 @@ struct AgentRunView: View {
                         }
                     }
                 }
+            }
+
+            // 模型实时输出（像 Codex 一样边生成边显示）。
+            if !stream.isEmpty {
+                Text(stream)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(6)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+                    .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
         }
         .padding(14)

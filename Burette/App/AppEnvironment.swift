@@ -31,6 +31,8 @@ final class AppEnvironment: ObservableObject {
     @Published var agentStartedAt: Date?
     /// 本次请求的 Codex 式执行记录（读取了哪些文件、第几轮请求模型等）。
     @Published var agentSteps: [String] = []
+    /// 模型当前的流式输出（截取尾部），用于对话页实时预览。
+    @Published var agentStream: String = ""
     /// 最近一次自动应用改动的提示，界面读取后置空。
     @Published var applyNotice: String?
     @Published var busyMessage: String?
@@ -53,6 +55,12 @@ final class AppEnvironment: ObservableObject {
     private var cancelledByUser = false
     /// 当前实时活动对应的仓库名（用于灵动岛展示）。
     private var liveActivityRepository: String?
+    /// 接口是否已被判定为不支持工具调用（一旦判定就回退到文本协议）。
+    private var toolsUnsupported = false
+    /// 每个仓库最近读过的文件内容，供后续轮次复用。
+    private var agentFileMemory: [UUID: [(path: String, content: String)]] = [:]
+    /// 流式输出节流用的时间戳。
+    private var lastStreamUpdate = Date.distantPast
 
     // MARK: - Init
 
@@ -379,6 +387,8 @@ final class AppEnvironment: ObservableObject {
                 repositories[index].lastSyncedAt = Date()
             }
             remoteUpdates[repository.id] = false
+            // 工作区内容整体更新，之前缓存的文件内容可能已过期，清掉。
+            agentFileMemory[repository.id] = nil
             persistAll()
             Log.info("拉取完成：\(repository.fullName)，\(result.fileCount) 个文件，base \(result.sha.prefix(7))", .workspace)
         } catch {
@@ -481,6 +491,8 @@ final class AppEnvironment: ObservableObject {
         agentStatus = nil
         agentStartedAt = nil
         agentSteps = []
+        agentStream = ""
+        lastStreamUpdate = .distantPast
         AgentLiveActivity.shared.end()
         liveActivityRepository = nil
         Log.info("已中断对话请求", .ai)
@@ -504,6 +516,8 @@ final class AppEnvironment: ObservableObject {
         let startedAt = Date()
         agentStartedAt = startedAt
         agentSteps = []
+        agentStream = ""
+        lastStreamUpdate = .distantPast
         liveActivityRepository = repository.fullName
         // 对话进行时把进度同步到灵动岛 / 锁屏。
         AgentLiveActivity.shared.start(
@@ -516,6 +530,7 @@ final class AppEnvironment: ObservableObject {
             agentStatus = nil
             agentStartedAt = nil
             agentSteps = []
+            agentStream = ""
             AgentLiveActivity.shared.end()
             liveActivityRepository = nil
         }
@@ -557,8 +572,11 @@ final class AppEnvironment: ObservableObject {
         }.value
         appendAgentStep("已整理文件树：\(tree.count) 项")
 
-        var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
-        apiMessages.append(PromptBuilder.treeMessage(fileTree: tree))
+        var bodyMessages: [AIChatMessage] = [PromptBuilder.treeMessage(fileTree: tree)]
+        // 带回之前几轮读过的文件内容，减少重复读取、保持跨轮一致。
+        if let memory = PromptBuilder.memoryMessage(files: agentFileMemory[repository.id] ?? []) {
+            bodyMessages.append(memory)
+        }
         // 兼容旧的显式参考文件：有的话先直接附带，省一次往返。
         if !contextPaths.isEmpty {
             let initial = contextPaths.compactMap { path -> FileContext? in
@@ -566,12 +584,12 @@ final class AppEnvironment: ObservableObject {
                 return FileContext(path: path, content: content)
             }
             let missing = contextPaths.filter { snapshot[$0] == nil }
-            apiMessages.append(PromptBuilder.readResultMessage(requested: contextPaths, files: initial, missing: missing))
+            bodyMessages.append(PromptBuilder.readResultMessage(requested: contextPaths, files: initial, missing: missing))
         }
         for message in history.suffix(12) where message.role != .system {
-            apiMessages.append(message.apiMessage)
+            bodyMessages.append(message.apiMessage)
         }
-        Log.debug("上下文：只发送文件树 \(tree.count) 项，其余由模型按需读取", .ai)
+        Log.debug("上下文：文件树 \(tree.count) 项，历史 \(history.suffix(12).count) 条", .ai)
 
         // 退到后台 / 锁屏时申请额外执行时间，尽量让请求跑完。
         let backgroundTask = BackgroundTask()
@@ -579,78 +597,26 @@ final class AppEnvironment: ObservableObject {
         defer { backgroundTask.end() }
 
         do {
-            // Codex 式按需读取：模型用 <<READ: 路径>> 索取文件，App 读好后继续问，
-            // 直到模型给出 diff（或达到轮次 / 体积上限）。
-            var reply = ""
-            var readPaths = Set<String>()
-            var totalReadChars = 0
-            var stopReading = false
-            let maxRounds = 10
-
-            for round in 1...maxRounds {
-                setAgentStatus(round == 1
-                    ? "请求模型（第 1 轮，先只发文件树）…"
-                    : "请求模型（第 \(round) 轮）…")
-                let output = try await aiClient.complete(config: config, apiKey: apiKey, messages: apiMessages)
-                try Task.checkCancellation()
-
-                let requests = stopReading ? [] : PromptBuilder.requestedPaths(in: output)
-                let fresh = requests.filter { !readPaths.contains($0) }
-                let outputHasDiff = Self.looksLikeDiff(output)
-
-                if fresh.isEmpty || outputHasDiff || round == maxRounds {
-                    reply = output
-                    break
-                }
-
-                setAgentStatus("模型请求读取 \(fresh.count) 个文件…")
-                let (found, missing) = Self.resolveRequestedPaths(fresh, in: tree)
-                var files: [FileContext] = []
-                for path in found {
-                    guard let content = snapshot[path] else { continue }
-                    let body = content.count > Self.readFileLimit
-                        ? String(content.prefix(Self.readFileLimit)) + "\n…（内容过长已截断）"
-                        : content
-                    files.append(FileContext(path: path, content: body))
-                    totalReadChars += body.count
-                }
-
-                apiMessages.append(AIChatMessage(role: "assistant", content: output))
-                apiMessages.append(PromptBuilder.readResultMessage(requested: fresh, files: files, missing: missing))
-                readPaths.formUnion(found)
-                readPaths.formUnion(missing)
-                // 把模型这次读了哪些文件写进过程记录，让进度像 Codex 一样具体。
-                for path in found.prefix(12) {
-                    appendAgentStep("读取 \(path)")
-                }
-                if found.count > 12 {
-                    appendAgentStep("…其余 \(found.count - 12) 个文件")
-                }
-                if !missing.isEmpty {
-                    appendAgentStep("未找到 \(missing.count) 个文件，已告知模型")
-                }
-                Log.debug("按需读取：请求 \(fresh.count) 个，命中 \(files.count) 个，缺失 \(missing.count) 个", .ai)
-
-                if totalReadChars > Self.readBudget {
-                    stopReading = true
-                    apiMessages.append(AIChatMessage(role: "user", content: "已读取足够多的内容，请直接基于现有信息输出 unified diff，不要再请求文件。"))
-                }
-            }
-
+            let turn = try await runAgentLoop(
+                repository: repository,
+                config: config,
+                apiKey: apiKey,
+                body: bodyMessages,
+                fileTree: tree,
+                snapshot: snapshot
+            )
             try Task.checkCancellation()
-            setAgentStatus("正在解析改动…")
-            let diffText = DiffExtractor.extract(from: reply)
-            let patches = try? DiffParser.parse(diffText)
 
-            let elapsed = Date().timeIntervalSince(startedAt)
             let messageID = UUID()
+            let patches = turn.patches
+            var applied = turn.applied
+            var failedCount = turn.failed
+            var failureSummary = turn.failureSummary
 
-            // 先应用改动，再按真实结果生成消息，避免失败时也显示「已应用」。
-            var applyState: ChatMessage.ApplyState?
-            if let patches, !patches.isEmpty {
+            // 文本回退模式：补丁在这里统一应用（工具模式已在 apply_patch 里落盘）。
+            if !turn.appliedInsideLoop, !patches.isEmpty {
+                setAgentStatus("正在解析改动…")
                 var outcome = apply(patches: patches, in: repository, messageID: messageID)
-
-                // 兜底：diff 应用不了的，请模型直接给出修改后的完整文件内容。
                 if !outcome.isComplete, !outcome.failedPaths.isEmpty {
                     setAgentStatus("正在修复无法应用的改动…")
                     let repaired = await repairFiles(
@@ -668,30 +634,43 @@ final class AppEnvironment: ObservableObject {
                         )
                     }
                 }
+                applied = outcome.applied
+                failedCount = outcome.failed
+                failureSummary = outcome.failureSummary
+            }
 
-                if outcome.isComplete {
+            let elapsed = Date().timeIntervalSince(startedAt)
+            var applyState: ChatMessage.ApplyState?
+            if !patches.isEmpty {
+                if failedCount == 0 {
                     applyState = .applied
+                    appliedMessageIDs.insert(messageID)
                     appendAgentStep("已应用 \(patches.count) 个文件的改动")
                     applyNotice = "已自动应用 \(patches.count) 个文件的改动"
-                    Log.info("收到 AI 回复并自动应用：\(reply.count) 字，\(patches.count) 个文件改动，用时 \(DurationFormat.short(elapsed))", .ai)
+                    Log.info("自动应用完成：\(patches.count) 个文件，用时 \(DurationFormat.short(elapsed))", .ai)
                 } else {
-                    applyState = outcome.isPartial ? .partial : .failed
-                    // 用 toast 提示失败原因，不弹全局错误框打断。
-                    let reason = outcome.failureSummary ?? "未知错误"
-                    appendAgentStep("改动应用失败：\(outcome.failed)/\(patches.count) 个文件")
+                    applyState = applied > 0 ? .partial : .failed
+                    let reason = failureSummary ?? "未知错误"
+                    appendAgentStep("改动应用失败：\(failedCount)/\(patches.count) 个文件")
                     applyNotice = reason.count > 160 ? String(reason.prefix(160)) + "…" : reason
-                    Log.warning("自动应用改动失败 \(outcome.failed)/\(patches.count)：\(reason)", .diff)
+                    Log.warning("自动应用改动失败 \(failedCount)/\(patches.count)：\(reason)", .diff)
                 }
                 lastError = nil
             } else {
-                Log.info("收到 AI 回复：\(reply.count) 字，没有可应用的改动", .ai)
+                Log.info("收到 AI 回复：\(turn.reply.count) 字，没有可应用的改动", .ai)
             }
 
+            let content: String
+            if turn.appliedInsideLoop {
+                content = turn.reply.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                content = PromptBuilder.strippingReadMarkers(DiffExtractor.prose(from: turn.reply))
+            }
             let message = ChatMessage(
                 id: messageID,
                 role: .assistant,
-                content: PromptBuilder.strippingReadMarkers(DiffExtractor.prose(from: reply)),
-                patches: patches,
+                content: content.isEmpty ? "已根据你的要求更新项目。" : content,
+                patches: patches.isEmpty ? nil : patches,
                 duration: elapsed,
                 applyState: applyState
             )
@@ -721,6 +700,281 @@ final class AppEnvironment: ObservableObject {
                 Log.error(error, .ai)
             }
         }
+    }
+
+    // MARK: - Agent 循环
+
+    /// 一次对话回合的结果。
+    private struct AgentTurn {
+        var reply: String = ""
+        var patches: [FilePatch] = []
+        var applied: Int = 0
+        var failed: Int = 0
+        var failureSummary: String?
+        /// 补丁是否已经在工具循环里落盘（apply_patch 工具）。
+        var appliedInsideLoop = false
+    }
+
+    /// 优先走工具调用；接口不支持工具调用时回退到文本协议。
+    private func runAgentLoop(
+        repository: Repository,
+        config: AIProviderConfig,
+        apiKey: String,
+        body: [AIChatMessage],
+        fileTree: [String],
+        snapshot: [String: String]
+    ) async throws -> AgentTurn {
+        if toolsUnsupported {
+            return try await runTextLoop(
+                repository: repository,
+                config: config,
+                apiKey: apiKey,
+                body: body,
+                fileTree: fileTree,
+                snapshot: snapshot
+            )
+        }
+        do {
+            return try await runToolLoop(
+                repository: repository,
+                config: config,
+                apiKey: apiKey,
+                body: body,
+                fileTree: fileTree,
+                snapshot: snapshot
+            )
+        } catch {
+            if AIClient.isToolUnsupported(error) {
+                toolsUnsupported = true
+                appendAgentStep("接口不支持工具调用，改用文本模式")
+                Log.warning("接口不支持工具调用，回退到文本协议：\(error.localizedDescription)", .ai)
+                return try await runTextLoop(
+                    repository: repository,
+                    config: config,
+                    apiKey: apiKey,
+                    body: body,
+                    fileTree: fileTree,
+                    snapshot: snapshot
+                )
+            }
+            throw error
+        }
+    }
+
+    /// Codex 式工具循环：模型可反复调用 list_files / read_file / grep / apply_patch。
+    private func runToolLoop(
+        repository: Repository,
+        config: AIProviderConfig,
+        apiKey: String,
+        body: [AIChatMessage],
+        fileTree: [String],
+        snapshot: [String: String]
+    ) async throws -> AgentTurn {
+        var turn = AgentTurn()
+        turn.appliedInsideLoop = true
+        var messages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
+        messages.append(contentsOf: body)
+        var executedPatches = Set<String>()
+        let maxRounds = 24
+
+        for round in 1...maxRounds {
+            try Task.checkCancellation()
+            setAgentStatus(round == 1 ? "模型分析中（第 1 轮）…" : "模型分析中（第 \(round) 轮）…")
+            agentStream = ""
+            let completion = try await aiClient.run(
+                config: config,
+                apiKey: apiKey,
+                messages: messages,
+                tools: AgentTools.specs
+            ) { [weak self] text in
+                Task { @MainActor in self?.updateAgentStream(text) }
+            }
+            try Task.checkCancellation()
+
+            if completion.toolCalls.isEmpty {
+                turn.reply = completion.text
+                appendAgentStep("模型给出结论")
+                break
+            }
+
+            var assistant = AIChatMessage(role: "assistant", content: completion.text.isEmpty ? nil : completion.text)
+            assistant.toolCalls = completion.toolCalls
+            messages.append(assistant)
+
+            for call in completion.toolCalls {
+                try Task.checkCancellation()
+                let name = call.function.name
+                let arguments = AgentTools.arguments(from: call.function.arguments)
+
+                if name == AgentTools.applyPatchName {
+                    let patch = arguments.patch ?? ""
+                    let result: String
+                    if patch.isEmpty {
+                        result = "错误：缺少 patch 参数。"
+                    } else if executedPatches.contains(patch) {
+                        result = "这个补丁已经提交过，请勿重复提交；如果还需要修改，请先 read_file 读取最新内容。"
+                    } else {
+                        executedPatches.insert(patch)
+                        appendAgentStep(AgentTools.stepDescription(name: name, arguments: arguments))
+                        result = applyAgentPatch(patch, in: repository, turn: &turn)
+                    }
+                    messages.append(PromptBuilder.toolResultMessage(callID: call.id, name: name, content: result))
+                    continue
+                }
+
+                appendAgentStep(AgentTools.stepDescription(name: name, arguments: arguments))
+                // 读文件 / 搜索可能很耗时，放到后台线程避免卡住界面。
+                let toolResult = await Task.detached(priority: .userInitiated) {
+                    AgentTools.run(
+                        name: name,
+                        arguments: arguments,
+                        fileTree: fileTree,
+                        repository: repository,
+                        workspace: workspace
+                    )
+                }.value
+                let result = toolResult ?? "错误：未知工具 \(name)。"
+                if name == "read_file", let path = arguments.path {
+                    rememberFile(path, in: repository, snapshot: snapshot)
+                }
+                messages.append(PromptBuilder.toolResultMessage(callID: call.id, name: name, content: result))
+            }
+        }
+        return turn
+    }
+
+    /// 文本回退循环：<<READ>> 索要文件 + 最终输出 unified diff。
+    private func runTextLoop(
+        repository: Repository,
+        config: AIProviderConfig,
+        apiKey: String,
+        body: [AIChatMessage],
+        fileTree: [String],
+        snapshot: [String: String]
+    ) async throws -> AgentTurn {
+        var turn = AgentTurn()
+        var messages: [AIChatMessage] = [PromptBuilder.textSystemMessage(config: config)]
+        messages.append(contentsOf: body)
+        var readPaths = Set<String>()
+        var totalReadChars = 0
+        var stopReading = false
+        var reply = ""
+        let maxRounds = 10
+
+        for round in 1...maxRounds {
+            try Task.checkCancellation()
+            setAgentStatus(round == 1
+                ? "请求模型（第 1 轮，先只发文件树）…"
+                : "请求模型（第 \(round) 轮）…")
+            agentStream = ""
+            let completion = try await aiClient.run(
+                config: config,
+                apiKey: apiKey,
+                messages: messages,
+                tools: nil
+            ) { [weak self] text in
+                Task { @MainActor in self?.updateAgentStream(text) }
+            }
+            try Task.checkCancellation()
+            let output = completion.text
+
+            let requests = stopReading ? [] : PromptBuilder.requestedPaths(in: output)
+            let fresh = requests.filter { !readPaths.contains($0) }
+            let outputHasDiff = Self.looksLikeDiff(output)
+
+            if fresh.isEmpty || outputHasDiff || round == maxRounds {
+                reply = output
+                break
+            }
+
+            setAgentStatus("模型请求读取 \(fresh.count) 个文件…")
+            let (found, missing) = Self.resolveRequestedPaths(fresh, in: fileTree)
+            var files: [FileContext] = []
+            for path in found {
+                guard let content = snapshot[path] else { continue }
+                let trimmedBody = content.count > Self.readFileLimit
+                    ? String(content.prefix(Self.readFileLimit)) + "\n…（内容过长已截断）"
+                    : content
+                files.append(FileContext(path: path, content: trimmedBody))
+                totalReadChars += trimmedBody.count
+            }
+
+            messages.append(AIChatMessage(role: "assistant", content: output))
+            messages.append(PromptBuilder.readResultMessage(requested: fresh, files: files, missing: missing))
+            readPaths.formUnion(found)
+            readPaths.formUnion(missing)
+            // 把模型这次读了哪些文件写进过程记录，让进度像 Codex 一样具体。
+            for path in found.prefix(12) {
+                appendAgentStep("读取 \(path)")
+                rememberFile(path, in: repository, snapshot: snapshot)
+            }
+            if found.count > 12 {
+                appendAgentStep("…其余 \(found.count - 12) 个文件")
+            }
+            if !missing.isEmpty {
+                appendAgentStep("未找到 \(missing.count) 个文件，已告知模型")
+            }
+            Log.debug("按需读取：请求 \(fresh.count) 个，命中 \(files.count) 个，缺失 \(missing.count) 个", .ai)
+
+            if totalReadChars > Self.readBudget {
+                stopReading = true
+                messages.append(AIChatMessage(role: "user", content: "已读取足够多的内容，请直接基于现有信息输出 unified diff，不要再请求文件。"))
+            }
+        }
+
+        turn.reply = reply
+        let diffText = DiffExtractor.extract(from: reply)
+        turn.patches = (try? DiffParser.parse(diffText)) ?? []
+        return turn
+    }
+
+    /// 执行 apply_patch 工具：解析 → 应用 → 记录，并把结果回给模型。
+    private func applyAgentPatch(_ text: String, in repository: Repository, turn: inout AgentTurn) -> String {
+        do {
+            let filePatches = try ApplyPatchParser.parse(text)
+            let outcome = apply(patches: filePatches, in: repository)
+            turn.patches.append(contentsOf: filePatches)
+            turn.applied += outcome.applied
+            turn.failed += outcome.failed
+            if let summary = outcome.failureSummary { turn.failureSummary = summary }
+
+            if outcome.isComplete {
+                lastError = nil
+                appendAgentStep("已应用 \(filePatches.count) 个文件的改动")
+                return "已成功应用 \(filePatches.count) 个文件的改动：\(filePatches.map(\.path).joined(separator: "、"))"
+            }
+            if outcome.isPartial {
+                appendAgentStep("部分改动失败（\(outcome.failed)/\(filePatches.count)）")
+                return "部分成功：已应用 \(outcome.applied) 个，失败 \(outcome.failed) 个（\(outcome.failureSummary ?? "未知错误")）。请 read_file 读取失败文件的最新内容后重新提交补丁。"
+            }
+            appendAgentStep("改动应用失败")
+            return "补丁应用失败：\(outcome.failureSummary ?? "未知错误")。请 read_file 读取最新内容后重新提交。"
+        } catch {
+            appendAgentStep("补丁格式无法解析")
+            return "补丁无法解析：\(error.localizedDescription)。请严格使用 *** Begin Patch / *** Update File 格式重新提交。"
+        }
+    }
+
+    /// 更新流式输出（节流，避免每个 token 都刷新界面）。
+    private func updateAgentStream(_ text: String) {
+        let now = Date()
+        guard now.timeIntervalSince(lastStreamUpdate) >= 0.12 else { return }
+        lastStreamUpdate = now
+        agentStream = String(text.suffix(2_000))
+    }
+
+    /// 记住某个文件内容，供后续轮次复用（最多 8 个 / 20 万字符）。
+    private func rememberFile(_ path: String, in repository: Repository, snapshot: [String: String]) {
+        guard let content = snapshot[path] else { return }
+        var items = agentFileMemory[repository.id] ?? []
+        items.removeAll { $0.path == path }
+        items.append((path: path, content: String(content.prefix(40_000))))
+        var total = items.reduce(0) { $0 + $1.content.count }
+        while items.count > 8 || (total > 200_000 && items.count > 1) {
+            total -= items[0].content.count
+            items.removeFirst()
+        }
+        agentFileMemory[repository.id] = items
     }
 
     /// 回到前台 / 网络恢复后自动重试被中断的请求。
@@ -861,6 +1115,7 @@ final class AppEnvironment: ObservableObject {
             updated.lastSyncedAt = Date()
             repositories[index] = updated
             changesByRepository[repository.id] = []
+            agentFileMemory[repository.id] = nil
             persistAll()
             Log.info("分支切换完成：\(repository.fullName) → \(branch)", .github)
         } catch {
@@ -997,7 +1252,7 @@ final class AppEnvironment: ObservableObject {
             \(instruction)
             """
             let messages: [AIChatMessage] = [
-                PromptBuilder.systemMessage(config: config),
+                AIChatMessage(role: "system", content: "你是一个精确的代码编辑器：只输出修改后的完整文件内容，用三反引号代码块包裹，不要输出解释、不要输出 diff。"),
                 AIChatMessage(role: "user", content: prompt)
             ]
 
@@ -1134,6 +1389,7 @@ final class AppEnvironment: ObservableObject {
                 }
                 // 工作区已被远端内容整体覆盖，未提交的改动不再存在于磁盘上，一并清掉避免列表与工作区不一致。
                 changesByRepository[repository.id] = []
+                agentFileMemory[repository.id] = nil
                 remoteUpdates[repository.id] = false
                 persistAll()
                 Log.info("推送后重新拉取完成：\(repository.fullName)，base \(result.sha.prefix(7))", .workspace)
