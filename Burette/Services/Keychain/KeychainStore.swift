@@ -21,7 +21,7 @@ enum KeychainError: Error, LocalizedError {
 struct KeychainStore: Sendable {
     let service: String
 
-    init(service: String = "com.burette.credentials") {
+    init(service: String = "com.aholic.burette.credentials") {
         self.service = service
     }
 

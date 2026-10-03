@@ -76,7 +76,7 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 `Support/Log.swift` 提供统一入口 `Log.debug/info/warning/error(_:_:)`，按分类
 （app / ui / github / ai / workspace / diff / persistence）写入：
 
-- OSLog（可在 Console.app 按子系统 `com.burette.app` 过滤）
+- OSLog（可在 Console.app 按子系统 `com.aholic.burette` 过滤）
 - 内存环形缓冲（最近 800 条，设置页「运行日志」可实时查看、按级别筛选、导出）
 - 沙盒 `Documents/Logs/burette.log`（超过 1 MB 轮转为 `burette.1.log`），可在「运行日志」里导出
 

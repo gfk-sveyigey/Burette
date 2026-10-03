@@ -43,7 +43,7 @@ Release 附带的 `Burette-<VERSION>-unsigned.ipa` 与 `SHA256.txt` 都是**未�
 
 如果以后要产出已签名 IPA，需要在工作流里加证书导入步骤，并把
 `CODE_SIGNING_ALLOWED=NO` 改成使用对应的签名身份与 Profile
-（Bundle ID 为 `com.burette.app`）。
+（Bundle ID 为 `com.aholic.burette`）。
 
 ## 注意事项
 

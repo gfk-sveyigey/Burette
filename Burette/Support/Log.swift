@@ -114,7 +114,7 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
     private let lock = NSLock()
     private var storage: [LogEntry] = []
 
-    private let fileQueue = DispatchQueue(label: "com.burette.log.file")
+    private let fileQueue = DispatchQueue(label: "com.aholic.burette.log.file")
     let fileURL: URL
     let stderrURL: URL
     private let maxFileSize = 1_024_000
@@ -374,12 +374,12 @@ final class LogCenter: ObservableObject, @unchecked Sendable {
 
 /// 全局日志入口：同时写入 OSLog 与 LogCenter。
 enum Log {
-    private static let subsystem = "com.burette.app"
+    private static let subsystem = "com.aholic.burette"
 
     private static let loggers: [LogCategory: Logger] = {
         var map: [LogCategory: Logger] = [:]
         for category in LogCategory.allCases {
-            map[category] = Logger(subsystem: "com.burette.app", category: category.rawValue)
+            map[category] = Logger(subsystem: "com.aholic.burette", category: category.rawValue)
         }
         return map
     }()
