@@ -5,7 +5,8 @@ struct ActionsView: View {
     @EnvironmentObject private var env: AppEnvironment
     let repository: Repository
 
-    @State private var currentBranchOnly = true
+    /// 默认展示所有分支，否则进行中的运行如果不在当前分支就会「看不到」。
+    @State private var currentBranchOnly = false
     @State private var runs: [GitHubWorkflowRun] = []
     @State private var isLoading = false
     @State private var errorText: String?
@@ -26,10 +27,38 @@ struct ActionsView: View {
                 ContentUnavailableView(
                     "没有工作流运行",
                     systemImage: "bolt.horizontal.circle",
-                    description: Text("这个仓库在所选分支上还没有 Actions 运行记录。")
+                    description: Text("这个仓库还没有 Actions 运行记录，或当前令牌没有 Actions 读取权限。")
                 )
             } else {
                 List {
+                    Section {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(currentBranchOnly ? repository.currentBranch : repository.fullName)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Text(currentBranchOnly ? "只看当前分支" : "全部分支")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if hasActiveRun {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.mini)
+                                    Text("进行中")
+                                        .font(.caption2.bold())
+                                        .foregroundStyle(.orange)
+                                }
+                            } else {
+                                Text("\(runs.count) 条")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+
                     ForEach(runs) { run in
                         Button {
                             selectedRun = run
@@ -48,7 +77,7 @@ struct ActionsView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Toggle("只看当前分支", isOn: $currentBranchOnly)
+                    Toggle("只看当前分支（\(repository.currentBranch)）", isOn: $currentBranchOnly)
                     Button {
                         Task { await load() }
                     } label: {
@@ -67,6 +96,20 @@ struct ActionsView: View {
             }
         }
         .task(id: currentBranchOnly) { await load() }
+        // 有运行未结束时自动刷新，方便盯着正在进行的 Actions。
+        .task(id: hasActiveRun) {
+            guard hasActiveRun else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                if Task.isCancelled { break }
+                await load()
+            }
+        }
+    }
+
+    /// 是否有排队 / 进行中的运行。
+    private var hasActiveRun: Bool {
+        runs.contains { ActionFormat.isActive(status: $0.status) }
     }
 
     private func load() async {
@@ -215,6 +258,14 @@ struct ActionRunDetailView: View {
         }
         .task { await loadJobs() }
         .refreshable { await loadJobs() }
+        .task(id: ActionFormat.isActive(status: run.status) || jobs.contains { ActionFormat.isActive(status: $0.status) }) {
+            guard ActionFormat.isActive(status: run.status) || jobs.contains(where: { ActionFormat.isActive(status: $0.status) }) else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 10_000_000_000)
+                if Task.isCancelled { break }
+                await loadJobs()
+            }
+        }
     }
 
     private func loadJobs() async {
@@ -277,6 +328,14 @@ enum ActionFormat {
 
     static func symbol(for run: GitHubWorkflowRun) -> String {
         symbol(conclusion: run.conclusion, status: run.status)
+    }
+
+    /// 运行是否还在排队 / 进行中。
+    static func isActive(status: String?) -> Bool {
+        switch status {
+        case "in_progress", "queued", "waiting", "requested", "pending": return true
+        default: return false
+        }
     }
 
     static func text(conclusion: String?, status: String?) -> String {
