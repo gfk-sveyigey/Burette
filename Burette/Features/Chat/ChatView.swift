@@ -49,20 +49,11 @@ struct ChatView: View {
             if let repository = env.selectedRepository {
                 env.ensureConversation(for: repository)
             }
-            if let notice = env.contextNotice {
-                showToast(notice)
-                env.contextNotice = nil
-            }
         }
         .onChange(of: env.applyNotice) { _, notice in
             guard let notice else { return }
             showToast(notice)
             env.applyNotice = nil
-        }
-        .onChange(of: env.contextNotice) { _, notice in
-            guard let notice else { return }
-            showToast(notice)
-            env.contextNotice = nil
         }
     }
 

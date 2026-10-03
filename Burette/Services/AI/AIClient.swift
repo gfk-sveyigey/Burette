@@ -35,7 +35,7 @@ struct AIClient: Sendable {
 
     /// 请求超时（秒）。代码生成往往较慢，给足时间。
     private let requestTimeout: TimeInterval = 180
-    private let maxAttempts = 4
+    private let maxAttempts = 6
 
     init(session: URLSession? = nil) {
         if let session {
@@ -75,7 +75,7 @@ struct AIClient: Sendable {
                 Log.warning("AI 调用失败（第 \(attempt)/\(maxAttempts) 次）：\(error.localizedDescription)\(retryable ? "，将重试" : "")", .ai)
                 guard retryable, attempt < maxAttempts else { throw error }
                 // 指数退避，退到后台 / 网络抖动时给足恢复时间。
-                let seconds = min(8.0, pow(1.5, Double(attempt)))
+                let seconds = min(20.0, pow(1.6, Double(attempt)))
                 Log.debug("等待 \(String(format: "%.1f", seconds)) 秒后重试", .ai)
                 try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             }
@@ -133,12 +133,15 @@ struct AIClient: Sendable {
         }
     }
 
-    private static func isRetryable(_ error: Error) -> Bool {
+    /// 判断错误是否值得重试（锁屏 / 切网导致的临时失败都会走到这里）。
+    static func isRetryable(_ error: Error) -> Bool {
         if let urlError = error as? URLError {
             switch urlError.code {
             case .timedOut, .networkConnectionLost, .notConnectedToInternet,
                  .cannotConnectToHost, .dnsLookupFailed, .badServerResponse,
-                 .cannotFindHost, .resourceUnavailable:
+                 .cannotFindHost, .resourceUnavailable, .dataNotAllowed,
+                 .internationalRoamingOff, .callIsActive, .cannotLoadFromNetwork,
+                 .secureConnectionFailed:
                 return true
             default:
                 return false

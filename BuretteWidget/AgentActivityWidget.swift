@@ -16,21 +16,22 @@ struct AgentActivityWidget: Widget {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
-                DynamicIslandExpandedRegion(.trailing) {
-                    Text(context.state.startedAt, style: .timer)
-                        .font(.caption.monospacedDigit())
-                        .frame(maxWidth: 64)
-                }
                 DynamicIslandExpandedRegion(.center) {
                     Text(context.state.status)
                         .font(.caption)
                         .lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    Text(context.state.repository)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    HStack(spacing: 8) {
+                        Text(context.state.repository)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        // 时间固定在整行最右边。
+                        Text(context.state.startedAt, style: .timer)
+                            .font(.caption.monospacedDigit())
+                    }
                 }
             } compactLeading: {
                 Image(systemName: "sparkles")

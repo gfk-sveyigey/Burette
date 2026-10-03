@@ -200,10 +200,6 @@ struct ActionRunRow: View {
             }
 
             HStack(spacing: 8) {
-                Text(ActionFormat.text(for: run))
-                    .font(.caption.bold())
-                    .foregroundStyle(ActionFormat.color(for: run))
-
                 if let branch = run.headBranch {
                     Label(branch, systemImage: "arrow.triangle.branch")
                         .font(.caption2)
@@ -265,7 +261,10 @@ struct ActionRunDetailView: View {
 
     private var runSection: some View {
         Section("运行信息") {
-            LabeledContent("状态", value: ActionFormat.text(for: run))
+            LabeledContent("状态") {
+                Image(systemName: ActionFormat.symbol(for: run))
+                    .foregroundStyle(ActionFormat.color(for: run))
+            }
             LabeledContent("事件", value: run.event ?? "未知")
             if let branch = run.headBranch {
                 LabeledContent("分支", value: branch)
@@ -315,9 +314,6 @@ struct ActionRunDetailView: View {
             Text(step.name)
                 .font(.footnote)
             Spacer()
-            Text(ActionFormat.text(conclusion: step.conclusion, status: step.status))
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 
