@@ -1,7 +1,7 @@
 name: Burette
 
 options:
-  bundleIdPrefix: com.burette
+  bundleIdPrefix: com.aholic
   createIntermediateGroups: true
   deploymentTarget:
     iOS: "17.0"
@@ -25,7 +25,7 @@ targets:
       - target: BuretteWidget
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.burette.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.aholic.burette
         PRODUCT_NAME: Burette
         # CI 会用 VERSION 文件覆盖 MARKETING_VERSION，这里只是本地默认值。
         MARKETING_VERSION: "0.1.0"
@@ -54,7 +54,7 @@ targets:
       - path: Shared
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.burette.app.widget
+        PRODUCT_BUNDLE_IDENTIFIER: com.aholic.burette.widget
         PRODUCT_NAME: BuretteWidget
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
@@ -74,7 +74,7 @@ targets:
       - target: Burette
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.burette.app.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.aholic.burette.tests
         GENERATE_INFOPLIST_FILE: YES
 
 schemes:
