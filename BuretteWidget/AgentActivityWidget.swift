@@ -55,23 +55,25 @@ struct AgentActivityLockScreenView: View {
         HStack(spacing: 12) {
             Image(systemName: "sparkles")
                 .font(.title3)
+                .foregroundStyle(.white)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("Burette Agent")
                     .font(.caption.bold())
+                    .foregroundStyle(.white)
                 Text(state.status)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.85))
                     .lineLimit(2)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // 占据除时长外的全部宽度，保证标题与状态文字一定可见。
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
-            // 时长固定贴在整张卡片最右侧。
+            // 时长用 fixedSize 固定为自身宽度，既不抢文字空间，又贴在最右侧。
             Text(state.startedAt, style: .timer)
                 .font(.callout.monospacedDigit())
-                .multilineTextAlignment(.trailing)
-                .frame(minWidth: 56, alignment: .trailing)
-                .layoutPriority(1)
+                .foregroundStyle(.white)
+                .fixedSize()
         }
         .padding(14)
     }

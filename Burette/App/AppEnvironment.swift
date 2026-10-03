@@ -29,6 +29,8 @@ final class AppEnvironment: ObservableObject {
     @Published var agentStatus: String?
     /// 本次请求的开始时间，用于界面显示已用时长。
     @Published var agentStartedAt: Date?
+    /// 本次请求的 Codex 式执行记录（读取了哪些文件、第几轮请求模型等）。
+    @Published var agentSteps: [String] = []
     /// 最近一次自动应用改动的提示，界面读取后置空。
     @Published var applyNotice: String?
     @Published var busyMessage: String?
@@ -450,11 +452,22 @@ final class AppEnvironment: ObservableObject {
     /// 更新 agent 步骤，并把最新状态同步到灵动岛实时活动。
     private func setAgentStatus(_ value: String) {
         agentStatus = value
+        appendAgentStep(value)
         AgentLiveActivity.shared.update(
             repository: liveActivityRepository ?? "",
             status: value,
             startedAt: agentStartedAt ?? Date()
         )
+    }
+
+    /// 追加一条具体的执行记录（Codex 式过程日志），最多保留 80 条。
+    private func appendAgentStep(_ value: String) {
+        let line = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !line.isEmpty, line != agentSteps.last else { return }
+        agentSteps.append(line)
+        if agentSteps.count > 80 {
+            agentSteps.removeFirst(agentSteps.count - 80)
+        }
     }
 
     /// 中断正在进行的对话请求（保留已经发出的用户消息）。
@@ -467,6 +480,7 @@ final class AppEnvironment: ObservableObject {
         isSending = false
         agentStatus = nil
         agentStartedAt = nil
+        agentSteps = []
         AgentLiveActivity.shared.end()
         liveActivityRepository = nil
         Log.info("已中断对话请求", .ai)
@@ -489,17 +503,19 @@ final class AppEnvironment: ObservableObject {
         isSending = true
         let startedAt = Date()
         agentStartedAt = startedAt
+        agentSteps = []
         liveActivityRepository = repository.fullName
         // 对话进行时把进度同步到灵动岛 / 锁屏。
         AgentLiveActivity.shared.start(
             repository: repository.fullName,
-            status: "正在整理仓库上下文…",
+            status: "正在读取工作区…",
             startedAt: startedAt
         )
         defer {
             isSending = false
             agentStatus = nil
             agentStartedAt = nil
+            agentSteps = []
             AgentLiveActivity.shared.end()
             liveActivityRepository = nil
         }
@@ -539,6 +555,7 @@ final class AppEnvironment: ObservableObject {
         let tree = await Task.detached(priority: .userInitiated) {
             (try? workspace.listFiles(repository: repository)) ?? []
         }.value
+        appendAgentStep("已整理文件树：\(tree.count) 项")
 
         var apiMessages: [AIChatMessage] = [PromptBuilder.systemMessage(config: config)]
         apiMessages.append(PromptBuilder.treeMessage(fileTree: tree))
@@ -572,8 +589,8 @@ final class AppEnvironment: ObservableObject {
 
             for round in 1...maxRounds {
                 setAgentStatus(round == 1
-                    ? "正在请求模型（先只发文件树）…"
-                    : "已读取 \(readPaths.count) 个文件，模型分析中…")
+                    ? "请求模型（第 1 轮，先只发文件树）…"
+                    : "请求模型（第 \(round) 轮）…")
                 let output = try await aiClient.complete(config: config, apiKey: apiKey, messages: apiMessages)
                 try Task.checkCancellation()
 
@@ -602,6 +619,16 @@ final class AppEnvironment: ObservableObject {
                 apiMessages.append(PromptBuilder.readResultMessage(requested: fresh, files: files, missing: missing))
                 readPaths.formUnion(found)
                 readPaths.formUnion(missing)
+                // 把模型这次读了哪些文件写进过程记录，让进度像 Codex 一样具体。
+                for path in found.prefix(12) {
+                    appendAgentStep("读取 \(path)")
+                }
+                if found.count > 12 {
+                    appendAgentStep("…其余 \(found.count - 12) 个文件")
+                }
+                if !missing.isEmpty {
+                    appendAgentStep("未找到 \(missing.count) 个文件，已告知模型")
+                }
                 Log.debug("按需读取：请求 \(fresh.count) 个，命中 \(files.count) 个，缺失 \(missing.count) 个", .ai)
 
                 if totalReadChars > Self.readBudget {
@@ -644,12 +671,14 @@ final class AppEnvironment: ObservableObject {
 
                 if outcome.isComplete {
                     applyState = .applied
+                    appendAgentStep("已应用 \(patches.count) 个文件的改动")
                     applyNotice = "已自动应用 \(patches.count) 个文件的改动"
                     Log.info("收到 AI 回复并自动应用：\(reply.count) 字，\(patches.count) 个文件改动，用时 \(DurationFormat.short(elapsed))", .ai)
                 } else {
                     applyState = outcome.isPartial ? .partial : .failed
                     // 用 toast 提示失败原因，不弹全局错误框打断。
                     let reason = outcome.failureSummary ?? "未知错误"
+                    appendAgentStep("改动应用失败：\(outcome.failed)/\(patches.count) 个文件")
                     applyNotice = reason.count > 160 ? String(reason.prefix(160)) + "…" : reason
                     Log.warning("自动应用改动失败 \(outcome.failed)/\(patches.count)：\(reason)", .diff)
                 }

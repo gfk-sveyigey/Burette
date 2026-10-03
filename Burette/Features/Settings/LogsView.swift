@@ -15,17 +15,24 @@ struct LogsView: View {
         return list.reversed()
     }
 
+    private var modeBinding: Binding<LogCleanupMode> {
+        Binding(
+            get: { center.cleanupMode },
+            set: { center.updateCleanup(mode: $0, maxEntries: center.maxEntries, retentionDays: center.retentionDays) }
+        )
+    }
+
     private var entriesBinding: Binding<Int> {
         Binding(
             get: { center.maxEntries },
-            set: { center.updateCleanup(maxEntries: $0, retentionDays: center.retentionDays) }
+            set: { center.updateCleanup(mode: center.cleanupMode, maxEntries: $0, retentionDays: center.retentionDays) }
         )
     }
 
     private var daysBinding: Binding<Int> {
         Binding(
             get: { center.retentionDays },
-            set: { center.updateCleanup(maxEntries: center.maxEntries, retentionDays: $0) }
+            set: { center.updateCleanup(mode: center.cleanupMode, maxEntries: center.maxEntries, retentionDays: $0) }
         )
     }
 
@@ -51,14 +58,23 @@ struct LogsView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Menu {
                     Section("清理设置") {
-                        Picker("保留条数", selection: entriesBinding) {
-                            ForEach(LogCenter.Cleanup.entriesOptions, id: \.self) { value in
-                                Text(LogCenter.Cleanup.entriesLabel(value)).tag(value)
+                        Picker("清理方式", selection: modeBinding) {
+                            ForEach(LogCleanupMode.allCases) { mode in
+                                Text(mode.label).tag(mode)
                             }
                         }
-                        Picker("保留天数", selection: daysBinding) {
-                            ForEach(LogCenter.Cleanup.daysOptions, id: \.self) { value in
-                                Text(LogCenter.Cleanup.daysLabel(value)).tag(value)
+                        switch center.cleanupMode {
+                        case .entries:
+                            Picker("保留条数", selection: entriesBinding) {
+                                ForEach(LogCenter.Cleanup.entriesOptions, id: \.self) { value in
+                                    Text(LogCenter.Cleanup.entriesLabel(value)).tag(value)
+                                }
+                            }
+                        case .days:
+                            Picker("保留天数", selection: daysBinding) {
+                                ForEach(LogCenter.Cleanup.daysOptions, id: \.self) { value in
+                                    Text(LogCenter.Cleanup.daysLabel(value)).tag(value)
+                                }
                             }
                         }
                     }
