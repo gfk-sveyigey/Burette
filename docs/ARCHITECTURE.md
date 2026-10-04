@@ -121,6 +121,28 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 - 展示当前步骤（如「正在请求 AI 模型…」）与已用时长；Widget 用 \`Text(date, style: .timer)\` 自动走秒
 - CI 的无签名构建也会编译并嵌入该扩展
 
+### 3.10 编辑器
+
+编辑器是 UITextView（Support/CodeHighlighting.swift）而非 Runestone：
+
+- 高亮：正则词法器 CodeHighlighter，覆盖注释 / 字符串 / 数字 / 关键字 / 类型 / 函数 / 装饰器，并对 Markdown / HTML / CSS / JSON / YAML 有专门规则；超过 20 万字符跳过，避免卡顿。
+- 行号：LineNumberTextView 在 draw(_:) 里按 layoutManager 的片段绘制行号栏。
+- 自动缩进：回车时沿用当前行缩进；上一行以 {( : [ 结尾时再加一级；光标在 () / {} / [] 之间时补出成对闭合行。缩进单位从文件已有缩进推断（Tab 或 N 空格）。
+- 括号匹配：光标两侧的括号用 layoutManager 临时属性高亮，切换光标即更新，不改动文本。
+- 查找 / 替换：EditorView 底部的查找栏通过 CodeEditorController 驱动同一个 UITextView，支持下一个 / 上一个 / 替换 / 全部替换。
+
+### 3.11 提交历史
+
+GitHubClient.commits（GET /repos/{owner}/{repo}/commits?sha={branch}）在仓库文件页顶栏的「提交历史」入口加载，展示提交标题 / 作者 / 时间 / 短 SHA。结果缓存在 AppEnvironment.commitsByRepository（不落盘）。
+
+### 3.12 离线推送队列
+
+Models/PendingPush.swift + AppEnvironment：
+
+- 提交失败且错误可重试（URLError 网络类 / HTTP 5xx）时，改动快照与提交说明写入 pendingPushes 并持久化。
+- flushPendingPushes() 在启动、应用回到前台、以及改动页手动点「立即重试」时执行；成功后从工作区与队列中移除对应改动。
+- 改动页一级列表展示队列（可查看失败原因、左滑删除）。
+
 ## 4. 并发约定
 
 - 所有 IO（网络、文件）使用 `async/await`，不阻塞主线程
@@ -131,7 +153,9 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 
 | 需求 | 当前实现 | 说明 |
 |---|---|---|
-| 推送确认 | 改动页顶部显示仓库 + 分支，推送前弹确认框 | 避免多仓库下推错库 |
-| 本地存储 SQLite | 先用 JSON 文件 | 已通过协议隔离，替换成本低 |
-| 语法高亮(Runestone) | 内置正则高亮 + 行号栏（`Support/CodeHighlighting.swift`） | 覆盖注释/字符串/数字/关键字/类型/函数/装饰器等 token 及 Markdown、HTML、CSS、JSON、YAML 特例；Runestone 见 project.yml，接入后替换 |
+| 推送确认 | 改动页顶部显示仓库 + 分支，推送前弹确认框；推送前先查远端，领先则提示先拉取（也可确认强制推送） | 避免推错库 / 覆盖别人的提交 |
+| 本地存储 SQLite | SQLiteStore（键 → JSON blob）；首次启动自动迁移旧 JSON，打不开时回退 JSONStore | 通过 PersistenceStore 协议隔离，调用方无感 |
+| 语法高亮(Runestone) | 内置正则高亮 + 行号栏（`Support/CodeHighlighting.swift`） | 覆盖注释/字符串/数字/关键字/类型/函数/装饰器等 token 及 Markdown、HTML、CSS、JSON、YAML 特例；另含自动缩进 / 括号匹配 / 查找替换。Runestone 见 project.yml，接入后替换 |
 | Liquid Glass | 标准组件 + `Support/LiquidGlass.swift` 封装 | iOS 26 用 `glassEffect`；iOS 17–25 降级为 `ultraThinMaterial` |
+| 大仓库性能 | 拉取 blob 有限并发（6 路）；递归树被截断时逐目录遍历补全 | 避免逐个 blob 串行拉取过慢 / 缺文件 |
+| 离线推送 | 断网时提交入 pendingPushes，联网 / 回前台自动补推 | 见 3.12 |

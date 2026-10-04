@@ -84,7 +84,6 @@ jobs:
             CURRENT_PROJECT_VERSION='${{ github.run_number }}' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build
 
       - name: Package unsigned IPA
         run: |

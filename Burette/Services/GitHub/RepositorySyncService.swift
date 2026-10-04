@@ -86,15 +86,43 @@ struct RepositorySyncService: Sendable {
             try FileManager.default.removeItem(at: folder)
         }
 
+        // 逐个 blob 拉取是拉取阶段最慢的一环。大仓库里改成有限并发（6 路），
+        // 既显著提速，又不会把 PAT 的 5000 次/时限流一下打满。
+        let textBlobs = blobs.filter { !isBinary($0.path) }
+        let maxConcurrent = 6
         var written = 0
-        for entry in blobs where !isBinary(entry.path) {
-            let blob = try await client.blob(owner: owner, repo: repo, sha: entry.sha)
-            guard let content = blob.content,
-                  let data = Data(base64Encoded: content, options: .ignoreUnknownCharacters)
-            else { continue }
-            let text = String(decoding: data, as: UTF8.self)
-            try workspace.write(repository: repository, path: entry.path, content: text)
-            written += 1
+        try await withThrowingTaskGroup(of: Bool.self) { group in
+            var next = 0
+            while next < min(maxConcurrent, textBlobs.count) {
+                let entry = textBlobs[next]
+                next += 1
+                group.addTask {
+                    let blob = try await client.blob(owner: owner, repo: repo, sha: entry.sha)
+                    guard let content = blob.content,
+                          let data = Data(base64Encoded: content, options: .ignoreUnknownCharacters)
+                    else { return false }
+                    let text = String(decoding: data, as: UTF8.self)
+                    try workspace.write(repository: repository, path: entry.path, content: text)
+                    return true
+                }
+            }
+
+            while let didWrite = try await group.next() {
+                if didWrite { written += 1 }
+                if next < textBlobs.count {
+                    let entry = textBlobs[next]
+                    next += 1
+                    group.addTask {
+                        let blob = try await client.blob(owner: owner, repo: repo, sha: entry.sha)
+                        guard let content = blob.content,
+                              let data = Data(base64Encoded: content, options: .ignoreUnknownCharacters)
+                        else { return false }
+                        let text = String(decoding: data, as: UTF8.self)
+                        try workspace.write(repository: repository, path: entry.path, content: text)
+                        return true
+                    }
+                }
+            }
         }
 
         let elapsed = Int(Date().timeIntervalSince(startedAt) * 1000)

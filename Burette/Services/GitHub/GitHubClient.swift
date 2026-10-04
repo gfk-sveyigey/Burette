@@ -84,9 +84,15 @@ actor GitHubClient {
         try await get("/repos/\(owner)/\(repo)/branches")
     }
 
-    func commits(owner: String, repo: String, branch: String) async throws -> [GitHubCommitSummary] {
+    func commits(
+        owner: String,
+        repo: String,
+        branch: String,
+        perPage: Int = 50
+    ) async throws -> [GitHubCommitSummary] {
         try await get("/repos/\(owner)/\(repo)/commits", query: [
-            URLQueryItem(name: "sha", value: branch)
+            URLQueryItem(name: "sha", value: branch),
+            URLQueryItem(name: "per_page", value: String(perPage))
         ])
     }
 
@@ -205,6 +211,24 @@ actor GitHubClient {
             query: [],
             body: nil
         )
+    }
+
+    /// 拉取某个 job 的日志（GitHub 返回 zip，本地解出文本）。
+    func jobLogs(owner: String, repo: String, jobID: Int) async throws -> String {
+        let data = try await send(
+            method: "GET",
+            path: "/repos/\(owner)/\(repo)/actions/jobs/\(jobID)/logs",
+            query: [],
+            body: nil
+        )
+        let entries = try ZipReader.entries(from: data)
+        // 日志包里通常是一个文本文件；按包内顺序拼接，兼容多文件的情况。
+        let parts = entries
+            .filter { !$0.data.isEmpty }
+            .map { String(decoding: $0.data, as: UTF8.self) }
+            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard !parts.isEmpty else { throw GitHubError.decoding("日志压缩包里没有可用内容。") }
+        return parts.joined(separator: "\n")
     }
 
     /// 取消进行中的 workflow。

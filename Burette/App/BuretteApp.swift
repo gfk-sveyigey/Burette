@@ -27,6 +27,8 @@ struct BuretteApp: App {
             if phase == .active {
                 // 回到前台：如果上次请求被锁屏 / 切网打断，自动接着跑完。
                 Task { await environment.resumePendingSendIfNeeded() }
+                // 顺手把离线队列里攒下的提交补推一次。
+                Task { await environment.flushPendingPushes() }
             } else {
                 // 进入后台 / 非活跃时把排队的日志写盘，避免进程被回收时丢日志。
                 LogCenter.shared.flush()

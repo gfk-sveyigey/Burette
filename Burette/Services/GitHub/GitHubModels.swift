@@ -180,6 +180,8 @@ struct GitHubWorkflowStep: Codable, Sendable, Identifiable {
     let number: Int
     let status: String?
     let conclusion: String?
+    let startedAt: String?
+    let completedAt: String?
 
     var id: Int { number }
 }
