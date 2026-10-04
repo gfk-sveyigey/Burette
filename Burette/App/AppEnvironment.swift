@@ -824,6 +824,9 @@ final class AppEnvironment: ObservableObject {
 
                 appendAgentStep(AgentTools.stepDescription(name: name, arguments: arguments))
                 // 读文件 / 搜索可能很耗时，放到后台线程避免卡住界面。
+                // 显式捕获为局部常量：Task.detached 逃逸出 @MainActor，
+                // 直接引用 self 的 workspace 会触发「requires explicit use of self」编译错误。
+                let workspace = self.workspace
                 let toolResult = await Task.detached(priority: .userInitiated) {
                     AgentTools.run(
                         name: name,
