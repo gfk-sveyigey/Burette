@@ -27,6 +27,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.aholic.burette
         PRODUCT_NAME: Burette
+        # App 图标资源目录（Burette/Assets.xcassets 里的 AppIcon）
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # CI 会用 VERSION 文件覆盖 MARKETING_VERSION，这里只是本地默认值。
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
