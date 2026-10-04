@@ -32,7 +32,7 @@ struct AIProviderConfig: Identifiable, Codable, Hashable, Sendable {
         apiKeyID: String,
         extraInstructions: String? = nil,
         temperature: Double = 0.2,
-        reasoningEffort: String? = nil
+        reasoningEffort: String? = "high"
     ) {
         self.id = id
         self.name = name

@@ -30,7 +30,7 @@
 | `Models/` | Repository、AIProviderConfig、ChatMessage、FileChange、diff 相关模型 |
 | `Services/Keychain/` | PAT 与 API Key 的安全存储 |
 | `Services/Diff/` | unified diff 解析与回写 |
-| `Services/AI/` | OpenAI 兼容接口调用与提示词构造 |
+| `Services/AI/` | OpenAI 兼容接口调用（工具 / 流式）与提示词构造、Agent 工具定义（`AgentTools`） |
 | `Services/GitHub/` | REST 客户端与 Git Data API 提交流程 |
 | `Services/Workspace/` | 本地工作区读写、仓库与配置持久化 |
 | `Features/` | 按功能划分的界面：Auth / Repositories / Chat / Changes / Editor / Settings |
@@ -90,12 +90,15 @@ PAT 与 AI API Key 只存 Keychain；持久化配置里仅保存 Keychain 条目
 每个仓库可保存多条对话（Conversation），支持新建、切换、重命名、删除与中断：
 
 - ChatView 顶栏左侧进入对话列表；AppEnvironment 维护 conversationsByRepository 与 selectedConversationIDs。
-- 发送时只把仓库**文件树**作为初始上下文（Codex 式按需读取），依次经过「发送文件树 → 模型用 `<<READ: 路径>>` 请求文件 → App 读好后继续问 → 解析 diff」，agentStatus 实时暴露给界面，由 AgentRunView 以步骤卡片呈现，使过程更像一次 agent 任务执行。AI 配置里的「模型强度」映射到接口的 reasoning_effort（low / medium / high），选「默认」时不发送该参数以兼容不支持的模型。
+- 发送时先把仓库**文件树**作为初始上下文，然后进入 Codex 式**工具循环**：模型可反复调用 `list_files` / `read_file` / `grep` / `apply_patch`（`AgentTools` 定义，AIClient 以 OpenAI `tools` 格式随请求发送）。agentStatus / agentSteps / agentStream 实时暴露给界面，由 AgentRunView 以步骤卡片 + 流式预览呈现。
+- 流式：AIClient 默认 `stream: true`，按 SSE（`data:` 行）解析文本增量与工具调用增量，onText 回调把累计文本节流地推给界面；服务端若忽略 stream、直接返回整体 JSON 也能兼容。
+- apply_patch：模型用 `*** Begin Patch / *** Update File / *** Add File / *** Delete File` 提交改动（`ApplyPatchParser` 解析，hunk 不带行号），由 PatchApplier 的「内容搜索 + fuzz」定位落盘；一个补丁可同时改多个文件，落盘结果作为工具结果回给模型，失败时模型可重读后重试，重复提交会被拒绝。
+- 兼容回退：接口返回「不支持 tools」时（HTTP 400 / 404 / 422 / 501 且信息含 tool / function / unsupported），自动回退到 `<<READ: 路径>> + unified diff` 文本协议，并记住该接口不再尝试工具调用；回退路径上限 10 轮、单文件 12 万字符、单轮累计 60 万字符。
+- 跨轮记忆：read_file（或文本模式读取）过的文件内容按仓库缓存（最多 8 个 / 20 万字符），下一轮作为上下文带回；拉取或切换分支后清空，避免用到过期内容。
 - send 为非阻塞：内部持有 sendTask，再次发送或点击停止键会调用 cancelSend() 取消在途请求，取消不写入错误提示。
-- AI 返回的 diff 会自动应用到工作区（agentStatus 走完后由 AppEnvironment.apply 写入），界面只展示说明文字与结果徽标（applied / partial / failed，只有真正写入工作区才显示「已应用」）；气泡正文用 DiffExtractor.prose 去掉 diff 原文，并去掉 `<<READ: …>>` 标记。
+- AI 应用改动后界面只展示说明文字与结果徽标（applied / partial / failed，只有真正写入工作区才显示「已应用」）；文本回退路径的气泡正文用 DiffExtractor.prose 去掉 diff 原文，并去掉 `<<READ: …>>` 标记。
 - 工作区为空（未拉取 / 拉取失败）时，发送前会自动拉取一次；仍为空则直接提示用户去「仓库」页拉取，而不是把空文件树丢给模型让它要求用户粘贴代码。读取工作区时单个非 UTF-8 文件会按 lossy 解码跳过，不会让整份快照失败。
-- 按需读取：模型通过 `<<READ: 路径>>` 标记索取文件（PromptBuilder.requestedPaths），AppEnvironment 解析路径（大小写不敏感）后把内容作为一条工具结果发回，循环直到模型给出 diff；上限 10 轮、单文件 12 万字符、单轮累计 60 万字符，超过则要求模型直接输出 diff。由于上下文里只有文件树，仓库再大也不会被截断，也不会出现「文件缺失」。
-- 稳定性：请求期间用 BackgroundTask 申请后台执行时间，退到后台 / 锁屏时尽量跑完；历史只带最近 12 条；AIClient 最多重试 4 次并指数退避。
+- 稳定性：请求期间用 BackgroundTask 申请后台执行时间，退到后台 / 锁屏时尽量跑完；历史只带最近 12 条；AIClient 最多重试 6 次并指数退避。AI 配置里的「模型强度」映射到接口的 reasoning_effort，默认 `high`，也可选「默认（不发送）」以兼容不支持的模型。
 - 界面用 agentStartedAt 实时显示已用时长（统一中文单位，如「45秒」「1分23秒」），回复气泡展示最终用时。
 - 取消类错误（URLError.cancelled / CancellationError）统一由 Support/Cancellation.swift 识别，只记调试日志，不弹错。
 - 改动页用 LineDiff + DiffView 以 GitHub 风格展示：旧/新行号 + 增删颜色 + 统计条；PatchApplier 逐级放宽定位：精确行号 → 全文件内容搜索 → 忽略首尾空白 → fuzz（保留删除行、丢弃首尾上下文）→ 已是改动后状态则跳过 → 整文件重写；若声明的文件里定位不到，AppEnvironment.resolvedPatch 会在工作区中寻找唯一匹配的文件来纠正路径；仍无法应用的，performSend 会再请模型直接返回完整文件内容作为兜底。
