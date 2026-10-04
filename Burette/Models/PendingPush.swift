@@ -43,7 +43,7 @@ struct PendingPush: Identifiable, Codable, Hashable, Sendable {
         self.lastError = lastError
     }
 
-    var fullName: String { "\\(owner)/\\(name)" }
+    var fullName: String { "\(owner)/\(name)" }
 
     /// 用队列里的信息还原一个 Repository（用于在无本地仓库对象时推送）。
     var placeholderRepository: Repository {

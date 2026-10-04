@@ -70,7 +70,7 @@ jobs:
 
       - name: Build unsigned iOS app (Debug)
         run: |
-          set -eo pipefail
+          set -e
           rm -rf build/DerivedData
 
           xcodebuild \
@@ -84,23 +84,6 @@ jobs:
             CURRENT_PROJECT_VERSION='${{ github.run_number }}' \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            build 2>&1 | tee build.log
-
-      # 构建失败时把编译错误转成 check-run 注解（无需下载日志即可查看），
-      # 并写入 job summary，方便在 Actions 页面直接看到根因。
-      - name: Surface build errors
-        if: failure()
-        run: |
-          test -f build.log || exit 0
-          {
-            echo "## Build errors"
-            echo '```text'
-            grep -nE '(: error:|error:|fatal error:)' build.log | head -n 60 || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          grep -E '(: error:|error:|fatal error:)' build.log | head -n 20 | while IFS= read -r line; do
-            echo "::error::$line"
-          done || true
 
       - name: Package unsigned IPA
         run: |

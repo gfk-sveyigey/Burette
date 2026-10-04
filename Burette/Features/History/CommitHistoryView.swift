@@ -18,7 +18,7 @@ struct CommitHistoryView: View {
                     description: Text("下拉刷新，或确认当前分支已有提交。")
                 )
             } else {
-                List(commits, id: \\.sha) { commit in
+                List(commits, id: \.sha) { commit in
                     row(commit)
                 }
                 .listStyle(.insetGrouped)
@@ -56,7 +56,7 @@ struct CommitHistoryView: View {
     }
 
     private func commitTitle(_ message: String) -> String {
-        message.split(separator: "\\n", omittingEmptySubsequences: false).first.map(String.init) ?? message
+        message.split(separator: "\n", omittingEmptySubsequences: false).first.map(String.init) ?? message
     }
 
     private func date(_ raw: String?) -> String? {
