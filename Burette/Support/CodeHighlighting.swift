@@ -323,9 +323,44 @@ final class LineNumberTextView: UITextView {
         setNeedsDisplay()
     }
 
+    /// 需要高亮的括号范围（由 CodeEditor 的 Coordinator 更新）。
+    ///
+    /// iOS 的 NSLayoutManager 没有 AppKit 的临时属性 API，这里不改动正文，
+    /// 直接在 draw(_:) 里叠一层半透明底色，避免触发重排 / 文本变更回调。
+    var highlightedBracketRanges: [NSRange] = []
+
     override func draw(_ rect: CGRect) {
         super.draw(rect)
+        drawBracketHighlights()
         drawGutter()
+    }
+
+    /// 在光标两侧的匹配括号上叠一层底色。
+    private func drawBracketHighlights() {
+        guard !highlightedBracketRanges.isEmpty else { return }
+        let manager = layoutManager
+        let container = textContainer
+        let length = ((text ?? "") as NSString).length
+        let fillColor = UIColor.systemYellow.withAlphaComponent(0.32)
+        let strokeColor = UIColor.systemYellow.withAlphaComponent(0.75)
+
+        for range in highlightedBracketRanges {
+            guard range.length > 0, NSMaxRange(range) <= length else { continue }
+            let glyphRange = manager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            var box = manager.boundingRect(forGlyphRange: glyphRange, in: container)
+            guard !box.isNull, !box.isEmpty else { continue }
+            box.origin.x += textContainerInset.left
+            box.origin.y += textContainerInset.top
+            box = box.insetBy(dx: -1.5, dy: -1)
+            guard box.intersects(bounds) else { continue }
+
+            let path = UIBezierPath(roundedRect: box, cornerRadius: 3)
+            fillColor.setFill()
+            path.fill()
+            strokeColor.setStroke()
+            path.lineWidth = 1
+            path.stroke()
+        }
     }
 
     private func drawGutter() {
@@ -517,8 +552,6 @@ struct CodeEditor: UIViewRepresentable {
         weak var textView: UITextView?
         weak var controller: CodeEditorController?
 
-        /// 高亮中的括号范围，切换光标时先清掉。
-        private var bracketRanges: [NSRange] = []
         /// 自动缩进使用的单位（默认四空格，检测到 Tab 缩进的文件时改用 Tab）。
         private var indentUnit = "    "
 
@@ -626,35 +659,13 @@ struct CodeEditor: UIViewRepresentable {
             updateBracketHighlight(in: textView)
         }
 
-        /// 用 layoutManager 的临时属性高亮光标两侧的匹配括号。
+        /// 高亮光标两侧的匹配括号（交给 LineNumberTextView 在 draw 时绘制）。
         private func updateBracketHighlight(in textView: UITextView) {
-            let layoutManager = textView.layoutManager
-            let previous = bracketRanges
-            for range in previous {
-                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
-            }
-
+            guard let lineView = textView as? LineNumberTextView else { return }
             let matches = BracketMatcher.match(in: textView.text ?? "", selection: textView.selectedRange)
-            bracketRanges = matches
-
-            if !matches.isEmpty {
-                let color = UIColor.systemYellow.withAlphaComponent(0.35)
-                for range in matches {
-                    layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: range)
-                }
-            }
-
-            let changed = previous + matches
-            guard !changed.isEmpty else { return }
-            var lower = Int.max
-            var upper = 0
-            for range in changed {
-                lower = min(lower, range.location)
-                upper = max(upper, NSMaxRange(range))
-            }
-            if lower < upper {
-                layoutManager.invalidateDisplay(forCharacterRange: NSRange(location: lower, length: upper - lower))
-            }
+            guard lineView.highlightedBracketRanges != matches else { return }
+            lineView.highlightedBracketRanges = matches
+            lineView.setNeedsDisplay()
         }
 
         // MARK: 查找 / 替换
