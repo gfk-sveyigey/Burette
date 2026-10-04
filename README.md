@@ -2,13 +2,22 @@
 
 Burette 是一个 Swift 原生 iOS 应用，把 Codex + GitHub Desktop 的工作流搬到手机上：
 
-> PAT 登录 GitHub → 克隆 / 管理多仓库 → 与 AI 对话让它返回 unified diff → 预览并应用改动 → 用编辑器手动修改 → commit & push
+> PAT 登录 GitHub → 克隆 / 管理多仓库 → 与 AI 对话让它直接改代码 → 自动应用到工作区 → 用编辑器手动修改 → commit & push
 
-第一版只做「对话改代码 + 手动编辑 + 提交推送」这条主线，不涉及 GitHub Actions、编译器与多人协作。
+除了「对话改代码 + 手动编辑 + 提交推送」这条主线，还内置了 GitHub Actions 运行查看、提交历史、离线推送队列与灵动岛实时进度。
 
 ## 状态
 
-早期开发中。已完成基础脚手架（M0），正在实现核心链路（M1–M3），详见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+核心功能已完成（M0–M5），详见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
+## 主要功能
+
+- **登录与多仓库**：PAT 登录、账户切换 / 信息修改、仓库增删、分支切换、拉取、提交历史、私有仓库。
+- **AI 对话改代码**：多套 OpenAI 兼容配置、可选模型强度；对话式工具循环（列目录 / 读文件 / 搜索 / apply_patch），改动自动应用到工作区并通知。支持对话管理、中断、灵动岛 / 锁屏进度。
+- **编辑器**：语法高亮、行号、自动缩进、括号匹配、查找替换；保存即进入待提交。
+- **提交与推送**：改动列表 + GitHub 风格 diff、选择性 stage、commit message、一键 commit & push；推送前检查远端，远端领先时提示。
+- **GitHub Actions**：查看 workflow 运行、job / step 详情与完整日志，支持重新运行与取消。
+- **稳定性**：统一日志（内存环形缓冲 + 落盘 + 崩溃捕获）、离线推送队列、后台任务保活、大仓库并发拉取。
 
 ## 目录结构
 
@@ -20,6 +29,8 @@ Burette/
 │   ├── Models/            # 数据模型
 │   ├── Services/          # 网络 / 存储 / diff / AI
 │   └── Features/          # SwiftUI 界面，按功能分目录
+├── BuretteWidget/         # 灵动岛 / 锁屏实时活动扩展
+├── Shared/                # App 与扩展共享的实时活动属性
 ├── BuretteTests/          # 单元测试
 └── docs/                  # 设计文档
 ```
@@ -49,6 +60,7 @@ CI 由 GitHub Actions 驱动（`macos-26` + Xcode 26.6 + XcodeGen），版本号
 发布新版本：修改 `VERSION`（例如 `0.2.0`）→ 推到 `dev` → 开 PR 到 `main` 并合并。详见 [docs/RELEASING.md](docs/RELEASING.md)。
 
 产物是**未签名** IPA，需要自行重签名（AltStore / Sideloadly / 企业证书）后才能装到设备。
+
 ## 文档
 
 - [需求文档](REQUIREMENTS.md)

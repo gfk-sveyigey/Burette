@@ -84,9 +84,15 @@ actor GitHubClient {
         try await get("/repos/\(owner)/\(repo)/branches")
     }
 
-    func commits(owner: String, repo: String, branch: String) async throws -> [GitHubCommitSummary] {
+    func commits(
+        owner: String,
+        repo: String,
+        branch: String,
+        perPage: Int = 50
+    ) async throws -> [GitHubCommitSummary] {
         try await get("/repos/\(owner)/\(repo)/commits", query: [
-            URLQueryItem(name: "sha", value: branch)
+            URLQueryItem(name: "sha", value: branch),
+            URLQueryItem(name: "per_page", value: String(perPage))
         ])
     }
 

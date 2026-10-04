@@ -32,6 +32,9 @@ targets:
         # CI 会用 VERSION 文件覆盖 MARKETING_VERSION，这里只是本地默认值。
         MARKETING_VERSION: "0.1.0"
         CURRENT_PROJECT_VERSION: "1"
+        # SQLite3 系统库（持久化用 SQLiteStore）。import SQLite3 通常会自动链接，
+        # 这里显式声明，避免个别工具链下漏链。
+        OTHER_LDFLAGS: "-lsqlite3"
         # 使用仓库根目录手写的 Info.plist（CI 会校验 UIFileSharingEnabled 等键）
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Info.plist

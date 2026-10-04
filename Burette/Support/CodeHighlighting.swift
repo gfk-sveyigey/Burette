@@ -364,11 +364,103 @@ final class LineNumberTextView: UITextView {
         }
     }
 }
+/// 编辑器对外控制接口：把 SwiftUI 侧的查找 / 替换输入栏接到 UITextView 上。
+final class CodeEditorController: ObservableObject {
+    fileprivate weak var coordinator: CodeEditor.Coordinator?
+
+    /// 在文本里查找，命中后选中并滚动；返回是否命中。
+    @discardableResult
+    func find(_ query: String, forward: Bool = true) -> Bool {
+        coordinator?.find(query, forward: forward) ?? false
+    }
+
+    /// 替换当前选中（或第一个）匹配项；返回是否替换了。
+    @discardableResult
+    func replaceCurrent(_ query: String, with replacement: String) -> Bool {
+        coordinator?.replaceCurrent(query, with: replacement) ?? false
+    }
+
+    /// 全部替换；返回替换数量。
+    @discardableResult
+    func replaceAll(_ query: String, with replacement: String) -> Int {
+        coordinator?.replaceAll(query, with: replacement) ?? 0
+    }
+
+    /// 收起查找栏时取消选中。
+    func clearSelection() {
+        guard let textView = coordinator?.textView else { return }
+        textView.selectedRange = NSRange(location: textView.selectedRange.location, length: 0)
+    }
+}
+
+/// 括号匹配：给定光标位置，返回应高亮的两个括号范围（忽略字符串 / 注释内的括号）。
+enum BracketMatcher {
+    private static let pairs: [(open: unichar, close: unichar)] = [
+        (0x28, 0x29), // ( )
+        (0x5B, 0x5D), // [ ]
+        (0x7B, 0x7D)  // { }
+    ]
+
+    static func match(in text: String, selection: NSRange) -> [NSRange] {
+        let ns = text as NSString
+        let length = ns.length
+        guard length > 0 else { return [] }
+        for position in [selection.location, selection.location - 1] where position >= 0 && position < length {
+            let character = ns.character(at: position)
+            if let pair = pairs.first(where: { $0.open == character }),
+               let match = scanForward(ns, from: position, open: pair.open, close: pair.close) {
+                return [NSRange(location: position, length: 1), NSRange(location: match, length: 1)]
+            }
+            if let pair = pairs.first(where: { $0.close == character }),
+               let match = scanBackward(ns, from: position, open: pair.open, close: pair.close) {
+                return [NSRange(location: match, length: 1), NSRange(location: position, length: 1)]
+            }
+        }
+        return []
+    }
+
+    private static func scanForward(_ ns: NSString, from index: Int, open: unichar, close: unichar) -> Int? {
+        var depth = 0
+        var i = index
+        while i < ns.length {
+            let character = ns.character(at: i)
+            if character == open {
+                depth += 1
+            } else if character == close {
+                depth -= 1
+                if depth == 0 { return i }
+            }
+            i += 1
+        }
+        return nil
+    }
+
+    private static func scanBackward(_ ns: NSString, from index: Int, open: unichar, close: unichar) -> Int? {
+        var depth = 0
+        var i = index
+        while i >= 0 {
+            let character = ns.character(at: i)
+            if character == close {
+                depth += 1
+            } else if character == open {
+                depth -= 1
+                if depth == 0 { return i }
+            }
+            i -= 1
+        }
+        return nil
+    }
+}
 
 /// 带语法高亮的可编辑文本视图（内部用 UITextView 实现）。
+///
+/// 除了高亮与行号，还内置：回车自动缩进（含大括号换行补全）、
+/// 光标处括号匹配高亮、以及供查找替换栏调用的选中 / 替换能力。
 struct CodeEditor: UIViewRepresentable {
     @Binding var text: String
     let language: CodeLanguage
+    /// 查找 / 替换栏通过它驱动编辑器；不传也能正常编辑。
+    var controller: CodeEditorController? = nil
 
     static let font = UIFont.monospacedSystemFont(ofSize: 14, weight: .regular)
 
@@ -395,15 +487,24 @@ struct CodeEditor: UIViewRepresentable {
             right: 12
         )
         context.coordinator.language = language
+        context.coordinator.textView = textView
+        context.coordinator.controller = controller
+        controller?.coordinator = context.coordinator
         context.coordinator.render(text, in: textView)
         return textView
     }
 
     func updateUIView(_ textView: LineNumberTextView, context: Context) {
         context.coordinator.language = language
+        context.coordinator.controller = controller
+        controller?.coordinator = context.coordinator
         if (textView.text ?? "") != text {
             context.coordinator.render(text, in: textView)
         }
+    }
+
+    static func dismantleUIView(_ uiView: LineNumberTextView, coordinator: Coordinator) {
+        coordinator.controller?.coordinator = nil
     }
 
     func makeCoordinator() -> Coordinator {
@@ -413,21 +514,104 @@ struct CodeEditor: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         private let text: Binding<String>
         var language: CodeLanguage = .plain
+        weak var textView: UITextView?
+        weak var controller: CodeEditorController?
+
+        /// 高亮中的括号范围，切换光标时先清掉。
+        private var bracketRanges: [NSRange] = []
+        /// 自动缩进使用的单位（默认四空格，检测到 Tab 缩进的文件时改用 Tab）。
+        private var indentUnit = "    "
 
         init(text: Binding<String>) {
             self.text = text
         }
 
+        // MARK: 文本变更
+
         func textViewDidChange(_ textView: UITextView) {
             let value = textView.text ?? ""
             text.wrappedValue = value
+            detectIndentUnit(in: value)
             // 中文输入法等正在组词时不要重排，避免打断候选。
             guard textView.markedTextRange == nil else { return }
             render(value, in: textView)
         }
 
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            updateBracketHighlight(in: textView)
+        }
+
+        /// 回车时按当前行缩进自动补位；光标在括号之间时补出成对的闭合行。
+        func textView(
+            _ textView: UITextView,
+            shouldChangeTextIn range: NSRange,
+            replacementText replacement: String
+        ) -> Bool {
+            guard replacement == "\n" else { return true }
+            return insertSmartNewline(in: textView, at: range)
+        }
+
+        private func insertSmartNewline(in textView: UITextView, at range: NSRange) -> Bool {
+            let ns = textView.text as NSString
+            guard range.location <= ns.length else { return true }
+
+            let lineRange = ns.lineRange(for: NSRange(location: range.location, length: 0))
+            let currentLine = ns.substring(with: lineRange)
+            let indentation = String(currentLine.prefix { $0 == " " || $0 == "\t" })
+
+            let prefixLength = range.location - lineRange.location
+            let linePrefix = ns.substring(with: NSRange(location: lineRange.location, length: max(0, prefixLength)))
+            let trimmedPrefix = linePrefix.replacingOccurrences(
+                of: "[ \\t]+$",
+                with: "",
+                options: .regularExpression
+            )
+            let opensBlock = trimmedPrefix.last.map { "{(:[".contains($0) } ?? false
+
+            let hasClosingAfter = range.location < ns.length
+                && ")}]".contains(ns.substring(with: NSRange(location: range.location, length: 1)))
+
+            let extra = opensBlock ? indentUnit : ""
+            let insertion: String
+            if hasClosingAfter {
+                insertion = "\n" + indentation + extra + "\n" + indentation
+            } else {
+                insertion = "\n" + indentation + extra
+            }
+            let cursorOffset = ("\n" + indentation + extra).utf16.count
+
+            textView.textStorage.replaceCharacters(in: range, with: insertion)
+            let value = textView.text ?? ""
+            text.wrappedValue = value
+            render(value, in: textView)
+            textView.selectedRange = NSRange(location: range.location + cursorOffset, length: 0)
+            textView.scrollRangeToVisible(textView.selectedRange)
+            updateBracketHighlight(in: textView)
+            return false
+        }
+
+        /// 推断缩进单位：扫描前若干行，遇到 Tab 或空格缩进就沿用。
+        private func detectIndentUnit(in value: String) {
+            var scanned = 0
+            for line in value.split(separator: "\n", omittingEmptySubsequences: false) {
+                scanned += 1
+                if scanned > 400 { return }
+                let lead = line.prefix { $0 == " " || $0 == "\t" }
+                guard !lead.isEmpty else { continue }
+                if lead.first == "\t" {
+                    indentUnit = "\t"
+                } else {
+                    indentUnit = String(repeating: " ", count: min(lead.count, 8))
+                }
+                return
+            }
+        }
+
+        // MARK: 高亮
+
         func render(_ value: String, in textView: UITextView) {
             let selected = textView.selectedRange
+            self.textView = textView
             let highlighted = CodeHighlighter.highlight(value, language: language, font: CodeEditor.font)
             textView.attributedText = highlighted
             textView.typingAttributes = [
@@ -439,6 +623,120 @@ struct CodeEditor: UIViewRepresentable {
                 textView.selectedRange = NSRange(location: selected.location, length: 0)
             }
             textView.setNeedsDisplay()
+            updateBracketHighlight(in: textView)
+        }
+
+        /// 用 layoutManager 的临时属性高亮光标两侧的匹配括号。
+        private func updateBracketHighlight(in textView: UITextView) {
+            let layoutManager = textView.layoutManager
+            let previous = bracketRanges
+            for range in previous {
+                layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: range)
+            }
+
+            let matches = BracketMatcher.match(in: textView.text ?? "", selection: textView.selectedRange)
+            bracketRanges = matches
+
+            if !matches.isEmpty {
+                let color = UIColor.systemYellow.withAlphaComponent(0.35)
+                for range in matches {
+                    layoutManager.addTemporaryAttribute(.backgroundColor, value: color, forCharacterRange: range)
+                }
+            }
+
+            let changed = previous + matches
+            guard !changed.isEmpty else { return }
+            var lower = Int.max
+            var upper = 0
+            for range in changed {
+                lower = min(lower, range.location)
+                upper = max(upper, NSMaxRange(range))
+            }
+            if lower < upper {
+                layoutManager.invalidateDisplay(forCharacterRange: NSRange(location: lower, length: upper - lower))
+            }
+        }
+
+        // MARK: 查找 / 替换
+
+        private static let searchOptions: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+
+        @discardableResult
+        func find(_ query: String, forward: Bool) -> Bool {
+            guard let textView, !query.isEmpty else { return false }
+            let ns = textView.text as NSString
+            guard ns.length > 0 else { return false }
+            let current = textView.selectedRange
+
+            var found = NSRange(location: NSNotFound, length: 0)
+            if forward {
+                let start = min(NSMaxRange(current), ns.length)
+                found = ns.range(of: query, options: Self.searchOptions, range: NSRange(location: start, length: ns.length - start))
+                if found.location == NSNotFound {
+                    found = ns.range(of: query, options: Self.searchOptions, range: NSRange(location: 0, length: start))
+                }
+            } else {
+                let start = max(0, current.location)
+                found = ns.range(of: query, options: [Self.searchOptions, .backwards], range: NSRange(location: 0, length: start))
+                if found.location == NSNotFound {
+                    found = ns.range(of: query, options: [Self.searchOptions, .backwards], range: NSRange(location: start, length: ns.length - start))
+                }
+            }
+            guard found.location != NSNotFound else { return false }
+            textView.selectedRange = found
+            textView.scrollRangeToVisible(found)
+            return true
+        }
+
+        @discardableResult
+        func replaceCurrent(_ query: String, with replacement: String) -> Bool {
+            guard let textView, !query.isEmpty else { return false }
+            let ns = textView.text as NSString
+            var target = textView.selectedRange
+            if !matches(ns, target, query) {
+                guard find(query, forward: true) else { return false }
+                target = textView.selectedRange
+            }
+            guard target.location != NSNotFound, NSMaxRange(target) <= ns.length else { return false }
+
+            textView.textStorage.replaceCharacters(in: target, with: replacement)
+            let value = textView.text ?? ""
+            text.wrappedValue = value
+            render(value, in: textView)
+            let newRange = NSRange(location: target.location, length: (replacement as NSString).length)
+            textView.selectedRange = newRange
+            textView.scrollRangeToVisible(newRange)
+            updateBracketHighlight(in: textView)
+            return true
+        }
+
+        @discardableResult
+        func replaceAll(_ query: String, with replacement: String) -> Int {
+            guard let textView, !query.isEmpty else { return 0 }
+            let value = textView.text ?? ""
+            let ns = value as NSString
+            var result = ""
+            var index = 0
+            var count = 0
+            while index < ns.length {
+                let searchRange = NSRange(location: index, length: ns.length - index)
+                let found = ns.range(of: query, options: Self.searchOptions, range: searchRange)
+                if found.location == NSNotFound { break }
+                result += ns.substring(with: NSRange(location: index, length: found.location - index))
+                result += replacement
+                index = NSMaxRange(found)
+                count += 1
+            }
+            guard count > 0 else { return 0 }
+            result += ns.substring(from: index)
+            text.wrappedValue = result
+            render(result, in: textView)
+            return count
+        }
+
+        private func matches(_ ns: NSString, _ range: NSRange, _ query: String) -> Bool {
+            guard range.length > 0, NSMaxRange(range) <= ns.length else { return false }
+            return ns.substring(with: range).compare(query, options: Self.searchOptions) == .orderedSame
         }
     }
 }

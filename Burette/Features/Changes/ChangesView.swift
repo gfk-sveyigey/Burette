@@ -14,6 +14,24 @@ struct ChangesView: View {
                 )
             } else {
                 List {
+                    if !env.pendingPushes.isEmpty {
+                        Section {
+                            ForEach(env.pendingPushes) { item in
+                                PendingPushRow(item: item)
+                                    .circularDeleteSwipe { env.removePendingPush(item) }
+                            }
+                            Button {
+                                Task { await env.flushPendingPushes() }
+                            } label: {
+                                Label("立即重试", systemImage: "arrow.clockwise")
+                            }
+                        } header: {
+                            Text("离线推送队列")
+                        } footer: {
+                            Text("网络不可用时提交的改动会先排在这里，联网或回到前台后自动补推。")
+                        }
+                    }
+
                     ForEach(env.repositories) { repository in
                         NavigationLink {
                             RepositoryChangesView(repository: repository)
@@ -62,6 +80,33 @@ private struct ChangesRepositoryRow: View {
     }
 }
 
+/// 离线队列里的一条待推送提交。
+private struct PendingPushRow: View {
+    let item: PendingPush
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "tray.and.arrow.up")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.fullName)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("分支 \(item.branch) · \(item.changes.count) 个文件\(item.attempts > 0 ? " · 已重试 \(item.attempts) 次" : "")")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            if let error = item.lastError {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .accessibilityLabel(error)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 /// 改动页（二级）：某个仓库的改动列表 + 提交说明 + 提交并推送。
 struct RepositoryChangesView: View {
     @EnvironmentObject private var env: AppEnvironment
@@ -72,6 +117,7 @@ struct RepositoryChangesView: View {
     @State private var toast: String?
     @State private var errorText: String?
     @State private var showingPushConfirm = false
+    @State private var remoteConflict = false
     @FocusState private var isEditingMessage: Bool
 
     var body: some View {
@@ -101,6 +147,12 @@ struct RepositoryChangesView: View {
                 Button("好", role: .cancel) { errorText = nil }
             } message: {
                 Text(errorText ?? "")
+            }
+            .alert("远程有新提交", isPresented: $remoteConflict) {
+                Button("仍然推送", role: .destructive) { commit(force: true) }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("远程分支 \(repository.currentBranch) 领先本地，直接推送可能覆盖别人的提交。建议先回「仓库」页拉取最新代码，再重新提交。")
             }
             .confirmationDialog(
                 "提交并推送",
@@ -196,14 +248,21 @@ struct RepositoryChangesView: View {
         }
     }
 
-    private func commit() {
+    private func commit(force: Bool = false) {
         isEditingMessage = false
         let message = commitMessage
         Task {
-            let ok = await env.commitStaged(in: repository, message: message)
+            // 推送前先检查远端是否领先，避免覆盖别人的提交。
+            if !force, let ahead = await env.remoteBranchAhead(of: repository), ahead {
+                remoteConflict = true
+                return
+            }
+            let ok = await env.commitStaged(in: repository, message: message, force: force)
             if ok {
                 commitMessage = ""
                 showToast("已推送到 \(repository.fullName)@\(repository.currentBranch)")
+            } else if let error = env.lastError, error.contains("离线队列") {
+                showToast(error)
             } else {
                 errorText = env.lastError ?? "提交失败，请稍后再试。"
             }

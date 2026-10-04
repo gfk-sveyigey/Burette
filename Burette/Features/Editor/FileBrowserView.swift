@@ -27,6 +27,13 @@ struct FileBrowserView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 NavigationLink {
+                    CommitHistoryView(repository: repository)
+                } label: {
+                    Image(systemName: "clock.arrow.circlepath")
+                }
+                .accessibilityLabel("提交历史")
+
+                NavigationLink {
                     ActionsView(repository: repository)
                 } label: {
                     Image(systemName: "bolt.horizontal.circle")

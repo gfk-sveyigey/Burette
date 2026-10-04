@@ -7,11 +7,11 @@ Burette 是一个 Swift 原生 iOS App，复刻接近 Codex + GitHub Desktop 的
 1. PAT 登录 GitHub
 2. 连第三方 AI API，对话改代码
 3. AI 返回 unified diff，App 解析、预览、应用
-4. 手动编辑（Runestone）
+4. 手动编辑（内置高亮编辑器；Runestone 为可选增强）
 5. commit + push
 6. 支持多仓库
 
-> 不涉及 GitHub Actions，不涉及编译器。
+> 不涉及编译器 / 完整 IDE；已支持查看 GitHub Actions 运行记录。
 
 ## 二、功能需求
 
@@ -64,7 +64,7 @@ Burette 是一个 Swift 原生 iOS App，复刻接近 Codex + GitHub Desktop 的
 | 模块 | 方案 |
 |---|---|
 | UI | SwiftUI |
-| 编辑器 | Runestone（SPM 引入，Tree-sitter 语法包按语言加） |
+| 编辑器 | 内置 UITextView + 正则高亮（Support/CodeHighlighting.swift）；Runestone 为可选增强 |
 | Git | GitHub REST API（Git Data API） |
 | 本地存储 | 文件系统 + SQLite（对话/配置/元数据） |
 | AI 调用 | URLSession，OpenAI 兼容接口 |
@@ -74,7 +74,6 @@ Burette 是一个 Swift 原生 iOS App，复刻接近 Codex + GitHub Desktop 的
 
 ## 五、明确不做
 
-- GitHub Actions
 - 编译器 / 构建
 - 完整 IDE
 - 多人协作 / PR review
@@ -112,3 +111,15 @@ Burette 是一个 Swift 原生 iOS App，复刻接近 Codex + GitHub Desktop 的
 - 本地只存「工作区文件 + 元数据（当前分支、base commit SHA）」
 - 离线改动先攒着，联网后一次性走上面 6 步推送
 - 冲突时提示用户「远程有新提交，请先拉取」，App 重新拉取覆盖本地工作区
+
+## 八、已实现的能力（超出 MVP 的部分）
+
+- **编辑器**：语法高亮、行号、自动缩进、括号匹配、查找 / 替换；保存进入待提交。
+- **提交历史**：仓库页可查看当前分支最近提交（提交标题、作者、时间、SHA）。
+- **GitHub Actions**：查看 workflow 运行、job / step 详情与完整日志，支持重新运行 / 取消。
+- **AI Agent 过程可见**：对话时实时展示当前状态、已完成步骤与流式输出；支持中断。
+- **灵动岛 / 锁屏实时活动**：对话进行时展示进度与已用时长（带 App 图标）。
+- **离线推送队列**：断网时提交先入队，联网或回到前台自动补推；改动页可查看 / 重试 / 删除。
+- **稳定性**：统一日志中心（内存 + 落盘 + 崩溃捕获）、后台任务保活、网络中断自动重试、大仓库并发拉取。
+- **存储**：SQLite（首次启动自动迁移旧 JSON 数据，打不开时回退 JSON）。
+

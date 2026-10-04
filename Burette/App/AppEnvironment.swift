@@ -21,6 +21,10 @@ final class AppEnvironment: ObservableObject {
     @Published var remoteUpdates: [UUID: Bool] = [:]
     @Published var appliedMessageIDs: Set<UUID> = []
     @Published var tokenScopes: [String] = []
+    /// 提交历史缓存（按仓库，不落盘）。
+    @Published var commitsByRepository: [UUID: [GitHubCommitSummary]] = [:]
+    /// 离线推送队列：网络恢复后自动补推。
+    @Published var pendingPushes: [PendingPush] = []
 
     @Published var currentUser: GitHubUser?
     @Published var isAuthenticated = false
@@ -63,6 +67,8 @@ final class AppEnvironment: ObservableObject {
     private var lastStreamUpdate = Date.distantPast
     /// 已完成轮次累积的流式文本；新一轮在它后面继续追加，避免把 AI 之前说的话删掉。
     private var streamBase = ""
+    /// 离线队列是否正在重试，避免并发重入。
+    private var isFlushingPushes = false
 
     // MARK: - Init
 
@@ -73,7 +79,7 @@ final class AppEnvironment: ObservableObject {
     }
 
     init(store: PersistenceStore? = nil) {
-        let resolvedStore = store ?? JSONStore(directory: AppEnvironment.supportDirectory)
+        let resolvedStore = store ?? AppEnvironment.makeDefaultStore(directory: AppEnvironment.supportDirectory)
         let workspaceRoot = AppEnvironment.supportDirectory
             .appendingPathComponent("Workspaces", isDirectory: true)
         let workspace = WorkspaceManager(root: workspaceRoot)
@@ -86,6 +92,43 @@ final class AppEnvironment: ObservableObject {
         self.aiClient = AIClient()
         self.syncService = RepositorySyncService(client: client, workspace: workspace)
         self.gitData = GitDataService(client: client)
+    }
+
+    /// 默认存储：优先 SQLite；打不开时回退 JSON。首次启用 SQLite 会把既有 JSON 数据迁移过来。
+    private static func makeDefaultStore(directory: URL) -> PersistenceStore {
+        let json = JSONStore(directory: directory)
+        guard let sqlite = SQLiteStore(directory: directory) else {
+            Log.warning("SQLite 打开失败，回退到 JSON 存储", .persistence)
+            return json
+        }
+        migrateLegacyJSON(from: json, to: sqlite)
+        return sqlite
+    }
+
+    /// 迁移用键：与 persistAll / loadFromDisk 保持一致。
+    private static let persistedNames = [
+        "repositories", "ai-configs", "conversations", "selected-conversations",
+        "changes", "applied-messages", "messages", "pending-pushes"
+    ]
+
+    private static func migrateLegacyJSON(from json: JSONStore, to sqlite: SQLiteStore) {
+        var migrated = 0
+        for name in persistedNames {
+            guard !sqlite.contains(name) else { continue }
+            let url = json.url(for: name)
+            guard FileManager.default.fileExists(atPath: url.path),
+                  let data = try? Data(contentsOf: url)
+            else { continue }
+            do {
+                try sqlite.saveRaw(data, name: name)
+                migrated += 1
+            } catch {
+                Log.warning("迁移 \(name) 到 SQLite 失败：\(error.localizedDescription)", .persistence)
+            }
+        }
+        if migrated > 0 {
+            Log.info("已把 \(migrated) 项 JSON 数据迁移到 SQLite", .persistence)
+        }
     }
 
     // MARK: - 派生状态
@@ -210,6 +253,8 @@ final class AppEnvironment: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+        // 上次断网时攒下的提交，网络恢复后自动补推。
+        await flushPendingPushes()
     }
 
     private func loadFromDisk() {
@@ -221,6 +266,7 @@ final class AppEnvironment: ObservableObject {
             migrateLegacyMessagesIfNeeded()
             changesByRepository = try store.load([UUID: [FileChange]].self, from: "changes") ?? [:]
             appliedMessageIDs = Set(try store.load([UUID].self, from: "applied-messages") ?? [])
+            pendingPushes = try store.load([PendingPush].self, from: "pending-pushes") ?? []
             selectedRepositoryID = repositories.first?.id
             selectedAIConfigID = aiConfigs.first?.id
         } catch {
@@ -249,6 +295,7 @@ final class AppEnvironment: ObservableObject {
             try store.save(selectedConversationIDs, to: "selected-conversations")
             try store.save(changesByRepository, to: "changes")
             try store.save(Array(appliedMessageIDs), to: "applied-messages")
+            try store.save(pendingPushes, to: "pending-pushes")
         } catch {
             lastError = error.localizedDescription
         }
@@ -1074,6 +1121,43 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
+    /// 加载当前分支最近的提交历史（供「提交历史」页展示）。
+    func loadCommits(for repository: Repository, perPage: Int = 50) async {
+        do {
+            let list = try await github.commits(
+                owner: repository.owner,
+                repo: repository.name,
+                branch: repository.currentBranch,
+                perPage: perPage
+            )
+            commitsByRepository[repository.id] = list
+            Log.debug("加载提交历史：\(repository.fullName)＠\(repository.currentBranch) → \(list.count) 条", .github)
+        } catch {
+            report(error, .github)
+        }
+    }
+
+    /// 推送前检查远端分支是否领先本地 base：true 领先，false 未领先，nil 无法判断。
+    func remoteBranchAhead(of repository: Repository) async -> Bool? {
+        do {
+            let ref = try await github.ref(
+                owner: repository.owner,
+                repo: repository.name,
+                branch: repository.currentBranch
+            )
+            let ahead = repository.baseCommitSHA != nil && repository.baseCommitSHA != ref.object.sha
+            remoteUpdates[repository.id] = ahead
+            return ahead
+        } catch {
+            if Cancellation.isCancellation(error) {
+                Log.debug("推送前远端检查已取消：\(repository.fullName)", .github)
+            } else {
+                Log.warning("推送前远端检查失败：\(repository.fullName)：\(error.localizedDescription)", .github)
+            }
+            return nil
+        }
+    }
+
     /// 依次检查所有仓库的远端是否有新提交。
     func checkForUpdates() async {
         for repository in repositories {
@@ -1364,8 +1448,9 @@ final class AppEnvironment: ObservableObject {
         persistAll()
     }
 
+    /// force 为 false 时先检查远端分支是否领先本地 base；领先则拦截并提示先拉取。
     @discardableResult
-    func commitStaged(in repository: Repository, message: String) async -> Bool {
+    func commitStaged(in repository: Repository, message: String, force: Bool = false) async -> Bool {
         let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             lastError = "请先填写提交说明。"
@@ -1375,6 +1460,13 @@ final class AppEnvironment: ObservableObject {
         guard !staged.isEmpty else {
             lastError = "请先勾选要提交的文件。"
             return false
+        }
+        if !force {
+            if let ahead = await remoteBranchAhead(of: repository), ahead {
+                lastError = "远程分支 \(repository.currentBranch) 有新的提交。请先拉取最新代码（本地未提交的改动会被覆盖），再重新提交。"
+                Log.warning("推送被拦截：远端领先 \(repository.fullName)＠\(repository.currentBranch)", .github)
+                return false
+            }
         }
         busyMessage = "正在提交并推送…"
         defer { busyMessage = nil }
@@ -1406,9 +1498,103 @@ final class AppEnvironment: ObservableObject {
             }
             return true
         } catch {
-            report(error, .github)
+            if isRetryable(error) {
+                enqueuePendingPush(repository: repository, message: trimmed, changes: staged, error: error)
+                lastError = "网络不可用，已把 \(staged.count) 个文件加入离线队列，联网后会自动推送。"
+                Log.warning("提交失败，进入离线队列：\(repository.fullName)：\(error.localizedDescription)", .github)
+            } else {
+                report(error, .github)
+            }
             return false
         }
+    }
+
+    // MARK: - 离线推送队列
+
+    /// 可重试的错误（网络中断 / 服务端 5xx）。
+    private func isRetryable(_ error: Error) -> Bool {
+        if Cancellation.isCancellation(error) { return false }
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .timedOut, .cannotConnectToHost,
+                 .cannotFindHost, .dnsLookupFailed, .dataNotAllowed, .internationalRoamingOff:
+                return true
+            default:
+                return false
+            }
+        }
+        if let gitHubError = error as? GitHubError, case .http(let status, _) = gitHubError {
+            return status >= 500
+        }
+        return false
+    }
+
+    private func enqueuePendingPush(
+        repository: Repository,
+        message: String,
+        changes: [FileChange],
+        error: Error
+    ) {
+        let item = PendingPush(
+            repositoryID: repository.id,
+            owner: repository.owner,
+            name: repository.name,
+            branch: repository.currentBranch,
+            message: message,
+            changes: changes,
+            lastError: error.localizedDescription
+        )
+        // 同一个仓库、同一批文件如果已经在队列里（用户重试又失败），覆盖旧条目而不是叠加。
+        let paths = Set(changes.map(\.path))
+        pendingPushes.removeAll { existing in
+            existing.repositoryID == repository.id && Set(existing.changes.map(\.path)) == paths
+        }
+        pendingPushes.append(item)
+        persistAll()
+        Log.warning("已加入离线队列（\(changes.count) 个文件）：\(repository.fullName)", .github)
+    }
+
+    /// 网络恢复 / 应用回到前台时，重试队列里的提交。
+    func flushPendingPushes() async {
+        guard !pendingPushes.isEmpty, !isFlushingPushes else { return }
+        isFlushingPushes = true
+        defer { isFlushingPushes = false }
+        Log.info("开始重试 \(pendingPushes.count) 条离线推送", .github)
+        for item in pendingPushes {
+            let repository = repositories.first { $0.id == item.repositoryID } ?? item.placeholderRepository
+            do {
+                let sha = try await gitData.commit(repository: repository, changes: item.changes, message: item.message)
+                pendingPushes.removeAll { $0.id == item.id }
+                if let index = repositories.firstIndex(where: { $0.id == item.repositoryID }) {
+                    repositories[index].baseCommitSHA = sha
+                    repositories[index].lastSyncedAt = Date()
+                }
+                let pushedPaths = Set(item.changes.map(\.path))
+                changesByRepository[repository.id]?.removeAll { pushedPaths.contains($0.path) }
+                agentFileMemory[repository.id] = nil
+                remoteUpdates[repository.id] = false
+                persistAll()
+                Log.info("离线队列推送成功：\(item.fullName)，commit \(sha.prefix(7))", .github)
+            } catch {
+                if let index = pendingPushes.firstIndex(where: { $0.id == item.id }) {
+                    pendingPushes[index].attempts += 1
+                    pendingPushes[index].lastAttemptAt = Date()
+                    pendingPushes[index].lastError = error.localizedDescription
+                }
+                persistAll()
+                if isRetryable(error) {
+                    Log.warning("离线队列推送仍失败：\(item.fullName)：\(error.localizedDescription)", .github)
+                } else {
+                    Log.error("离线队列推送失败（不可重试，保留队列）：\(item.fullName)：\(error.localizedDescription)", .github)
+                }
+            }
+        }
+    }
+
+    /// 用户手动放弃一条离线队列记录。
+    func removePendingPush(_ item: PendingPush) {
+        pendingPushes.removeAll { $0.id == item.id }
+        persistAll()
     }
 
     // MARK: - 私有
