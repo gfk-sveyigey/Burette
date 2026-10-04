@@ -54,9 +54,12 @@ struct AIProviderConfig: Identifiable, Codable, Hashable, Sendable {
     /// 「模型强度」可选项，value 为空表示不发送 reasoning_effort。
     static let strengthOptions: [Strength] = [
         Strength(value: nil, label: "默认（不发送）"),
+        Strength(value: "none", label: "关闭"),
+        Strength(value: "minimal", label: "极低"),
         Strength(value: "low", label: "低"),
         Strength(value: "medium", label: "中"),
-        Strength(value: "high", label: "高")
+        Strength(value: "high", label: "高"),
+        Strength(value: "xhigh", label: "极高")
     ]
 
     /// 把 strengthOptions 里的 value 还原成展示用文案。

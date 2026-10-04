@@ -174,7 +174,6 @@ struct ChatView: View {
                 .lineLimit(1...5)
                 .textFieldStyle(.plain)
                 .focused($isInputFocused)
-                .disabled(env.isSending)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
                 .liquidGlass(cornerRadius: 20)
@@ -370,13 +369,11 @@ struct AgentRunView: View {
     private struct Step: Identifiable {
         let id: Int
         let text: String
-        let isCurrent: Bool
     }
 
     private var visibleSteps: [Step] {
-        let total = steps.count
-        return Array(steps.enumerated()).suffix(8).map {
-            Step(id: $0.offset, text: $0.element, isCurrent: $0.offset == total - 1)
+        Array(steps.enumerated()).suffix(8).map {
+            Step(id: $0.offset, text: $0.element)
         }
     }
 
@@ -393,29 +390,28 @@ struct AgentRunView: View {
             }
             .foregroundStyle(.secondary)
 
-            if visibleSteps.isEmpty {
-                Text(status ?? "准备中…")
-                    .font(.footnote)
+            // 当前正在做的事：像 Codex 一样实时显示，而不是只留一句「模型分析中」。
+            HStack(alignment: .top, spacing: 8) {
+                ProgressView().controlSize(.mini)
+                    .frame(width: 16, alignment: .center)
+                Text(status ?? "思考中…")
+                    .font(.footnote.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
-            } else {
+            }
+
+            if !visibleSteps.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(visibleSteps) { item in
                         HStack(alignment: .center, spacing: 8) {
-                            Group {
-                                if item.isCurrent {
-                                    ProgressView().controlSize(.mini)
-                                } else {
-                                    Image(systemName: "checkmark")
-                                        .font(.caption2.bold())
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(width: 16, alignment: .center)
+                            Image(systemName: "checkmark")
+                                .font(.caption2.bold())
+                                .foregroundStyle(.secondary)
+                                .frame(width: 16, alignment: .center)
 
                             Text(item.text)
                                 .font(.footnote)
-                                .foregroundStyle(item.isCurrent ? Color.primary : Color.secondary)
+                                .foregroundStyle(.secondary)
                                 .lineLimit(2)
                         }
                     }
@@ -427,7 +423,7 @@ struct AgentRunView: View {
                 Text(stream)
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)
-                    .lineLimit(6)
+                    .lineLimit(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(8)
                     .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

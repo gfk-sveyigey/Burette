@@ -61,6 +61,8 @@ final class AppEnvironment: ObservableObject {
     private var agentFileMemory: [UUID: [(path: String, content: String)]] = [:]
     /// 流式输出节流用的时间戳。
     private var lastStreamUpdate = Date.distantPast
+    /// 已完成轮次累积的流式文本；新一轮在它后面继续追加，避免把 AI 之前说的话删掉。
+    private var streamBase = ""
 
     // MARK: - Init
 
@@ -461,8 +463,8 @@ final class AppEnvironment: ObservableObject {
 
     /// 更新 agent 步骤，并把最新状态同步到灵动岛实时活动。
     private func setAgentStatus(_ value: String) {
+        // 状态是「当前正在做的事」，单独展示；不写进历史步骤，避免刷屏。
         agentStatus = value
-        appendAgentStep(value)
         AgentLiveActivity.shared.update(
             repository: liveActivityRepository ?? "",
             status: value,
@@ -492,6 +494,7 @@ final class AppEnvironment: ObservableObject {
         agentStartedAt = nil
         agentSteps = []
         agentStream = ""
+        streamBase = ""
         lastStreamUpdate = .distantPast
         AgentLiveActivity.shared.end()
         liveActivityRepository = nil
@@ -517,6 +520,7 @@ final class AppEnvironment: ObservableObject {
         agentStartedAt = startedAt
         agentSteps = []
         agentStream = ""
+        streamBase = ""
         lastStreamUpdate = .distantPast
         liveActivityRepository = repository.fullName
         // 对话进行时把进度同步到灵动岛 / 锁屏。
@@ -779,8 +783,8 @@ final class AppEnvironment: ObservableObject {
 
         for round in 1...maxRounds {
             try Task.checkCancellation()
-            setAgentStatus(round == 1 ? "模型分析中（第 1 轮）…" : "模型分析中（第 \(round) 轮）…")
-            agentStream = ""
+            setAgentStatus("正在请求模型…（第 \(round) 轮）")
+            streamBase = agentStream
             let completion = try await aiClient.run(
                 config: config,
                 apiKey: apiKey,
@@ -867,9 +871,9 @@ final class AppEnvironment: ObservableObject {
         for round in 1...maxRounds {
             try Task.checkCancellation()
             setAgentStatus(round == 1
-                ? "请求模型（第 1 轮，先只发文件树）…"
-                : "请求模型（第 \(round) 轮）…")
-            agentStream = ""
+                ? "正在请求模型…（第 1 轮，先只发文件树）"
+                : "正在请求模型…（第 \(round) 轮）")
+            streamBase = agentStream
             let completion = try await aiClient.run(
                 config: config,
                 apiKey: apiKey,
@@ -963,7 +967,8 @@ final class AppEnvironment: ObservableObject {
         let now = Date()
         guard now.timeIntervalSince(lastStreamUpdate) >= 0.12 else { return }
         lastStreamUpdate = now
-        agentStream = String(text.suffix(2_000))
+        // 拼接之前轮次的输出，保证「AI 说过的话」不因进入下一轮被清空。
+        agentStream = String((streamBase + text).suffix(6_000))
     }
 
     /// 记住某个文件内容，供后续轮次复用（最多 8 个 / 20 万字符）。

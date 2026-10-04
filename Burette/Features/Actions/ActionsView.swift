@@ -234,6 +234,7 @@ struct ActionRunDetailView: View {
     @State private var isLoading = false
     @State private var errorText: String?
     @State private var working = false
+    @State private var selectedStep: ActionStepSelection?
 
     var body: some View {
         List {
@@ -255,6 +256,9 @@ struct ActionRunDetailView: View {
         .task { await loadJobs() }
         .refreshable { await loadJobs() }
         .task(id: hasActiveJob) { await pollWhileActive() }
+        .sheet(item: $selectedStep) { selection in
+            ActionStepDetailView(repository: repository, job: selection.job, step: selection.step)
+        }
     }
 
     // MARK: 内容
@@ -291,7 +295,7 @@ struct ActionRunDetailView: View {
         Section {
             if let steps = job.steps, !steps.isEmpty {
                 ForEach(steps) { step in
-                    stepRow(step)
+                    stepRow(job, step)
                 }
             } else {
                 Text("没有步骤信息")
@@ -307,14 +311,29 @@ struct ActionRunDetailView: View {
         }
     }
 
-    private func stepRow(_ step: GitHubWorkflowStep) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: ActionFormat.symbol(conclusion: step.conclusion, status: step.status))
-                .foregroundStyle(ActionFormat.color(conclusion: step.conclusion, status: step.status))
-            Text(step.name)
-                .font(.footnote)
-            Spacer()
+    private func stepRow(_ job: GitHubWorkflowJob, _ step: GitHubWorkflowStep) -> some View {
+        Button {
+            selectedStep = ActionStepSelection(job: job, step: step)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: ActionFormat.symbol(conclusion: step.conclusion, status: step.status))
+                    .foregroundStyle(ActionFormat.color(conclusion: step.conclusion, status: step.status))
+                Text(step.name)
+                    .font(.footnote)
+                    .foregroundStyle(.primary)
+                Spacer()
+                if let duration = ActionFormat.duration(from: step.startedAt, to: step.completedAt) {
+                    Text(duration)
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
     }
 
     @ToolbarContentBuilder
@@ -405,6 +424,156 @@ struct ActionRunDetailView: View {
             errorText = error.localizedDescription
             Log.error(error, .github)
         }
+    }
+}
+
+// MARK: - 步骤详情
+
+/// 当前选中的步骤（job + step 组合，用作 sheet(item:) 的标识）。
+struct ActionStepSelection: Identifiable {
+    let job: GitHubWorkflowJob
+    let step: GitHubWorkflowStep
+
+    var id: String { "\(job.id)-\(step.number)" }
+}
+
+/// 步骤详情：步骤信息 + 所属任务的日志（GitHub 返回 zip，本地解压成文本）。
+struct ActionStepDetailView: View {
+    @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+
+    let repository: Repository
+    let job: GitHubWorkflowJob
+    let step: GitHubWorkflowStep
+
+    @State private var log: String?
+    @State private var isLoading = false
+    @State private var errorText: String?
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                infoHeader
+                Divider()
+                logContent
+            }
+            .navigationTitle("步骤详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .task { await load() }
+        }
+    }
+
+    // MARK: 内容
+
+    private var infoHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: ActionFormat.symbol(conclusion: step.conclusion, status: step.status))
+                    .foregroundStyle(ActionFormat.color(conclusion: step.conclusion, status: step.status))
+                Text(step.name)
+                    .font(.headline)
+                    .lineLimit(2)
+                Spacer()
+                if let url = job.htmlUrl {
+                    Button {
+                        openURL(url)
+                    } label: {
+                        Image(systemName: "safari")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("在 GitHub 打开")
+                }
+            }
+
+            HStack(spacing: 12) {
+                Label(ActionFormat.text(conclusion: step.conclusion, status: step.status),
+                      systemImage: "circle.dashed")
+                if let duration = ActionFormat.duration(from: step.startedAt, to: step.completedAt) {
+                    Label(duration, systemImage: "clock")
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Text("任务：\(job.name) · 第 \(step.number) 步")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    @ViewBuilder
+    private var logContent: some View {
+        if isLoading {
+            VStack(spacing: 8) {
+                ProgressView()
+                Text("正在获取日志…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let log, !log.isEmpty {
+            ScrollView {
+                Text(log)
+                    .font(.caption2.monospaced())
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+            }
+            .background(Color.secondary.opacity(0.06))
+        } else {
+            VStack(spacing: 10) {
+                Image(systemName: "doc.text.magnifyingglass")
+                    .font(.largeTitle)
+                    .foregroundStyle(.secondary)
+                Text(errorText ?? "这一步没有日志输出。")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                if let url = job.htmlUrl {
+                    Button("在 GitHub 打开日志") { openURL(url) }
+                        .font(.footnote)
+                }
+            }
+            .padding(24)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    // MARK: 数据
+
+    private func load() async {
+        isLoading = true
+        errorText = nil
+        do {
+            let text = try await env.github.jobLogs(
+                owner: repository.owner,
+                repo: repository.name,
+                jobID: job.id
+            )
+            log = Self.trim(text)
+            Log.info("加载 Actions 日志：\(repository.fullName) job #\(job.id)，\(text.count) 字", .github)
+        } catch {
+            errorText = error.localizedDescription
+            Log.error(error, .github)
+        }
+        isLoading = false
+    }
+
+    /// 日志过长时只保留末尾，避免一次渲染巨大文本。
+    private static func trim(_ text: String) -> String {
+        let limit = 200_000
+        guard text.count > limit else { return text }
+        return "…（日志过长，仅显示末尾 \(limit) 字）\n\n" + String(text.suffix(limit))
     }
 }
 
@@ -505,6 +674,12 @@ enum ActionFormat {
         formatter.locale = Locale(identifier: "zh_CN")
         formatter.unitsStyle = .short
         return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    /// 两个 ISO 时间之间的用时，例如 "1分20秒"。
+    static func duration(from start: String?, to end: String?) -> String? {
+        guard let start = parse(start), let end = parse(end), end >= start else { return nil }
+        return DurationFormat.short(end.timeIntervalSince(start))
     }
 
     /// 本地时间 "MM-dd HH:mm"。
